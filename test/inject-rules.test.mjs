@@ -331,6 +331,29 @@ test('--apply：目标文件里有非 UTF-8 字节时，报错且一个字也不
   assert.equal(backupDirs(isolated.target).length, 0, '出错时不该有备份文件夹');
 });
 
+test('--apply：目标路径中有一段不是文件夹时报错，这次全部不写', (t) => {
+  const isolated = makeIsolatedRunner(t);
+  const notDir = path.join(isolated.target, 'engineering', 'domain-modeling', 'not-a-dir');
+  fs.writeFileSync(notDir, 'x\n');
+
+  const originalRule = fs.readFileSync(isolated.ruleFile, 'utf8').replace(/\r\n/g, '\n');
+  const changedRule = originalRule.replace(
+    '\n-->',
+    `\ntarget:\npath: engineering/domain-modeling/not-a-dir/SKILL.md\nafter: ${SENTENCE}\nposition: after-paragraph\n-->`,
+  );
+  assert.notEqual(changedRule, originalRule, '测试规则文件应该加得进坏掉的目标路径');
+  fs.writeFileSync(isolated.ruleFile, changedRule);
+
+  const before = snapshot(isolated.target);
+  const result = runScript(isolated.script, isolated.target, '--apply');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /\[出错了\]/);
+  assert.match(result.stdout, /不是文件夹/);
+  assert.match(result.stdout, /\[会插入\]/, '另一个正常目标应该照样报出来');
+  assert.equal(backupDirs(isolated.target).length, 0, '出错时不该有备份文件夹');
+  assertSameFiles(before, snapshot(isolated.target));
+});
+
 test('--apply：目标路径跑到目标根目录外面时报错，谁都不写', (t) => {
   const isolated = makeIsolatedRunner(t);
   const base = path.dirname(isolated.target);

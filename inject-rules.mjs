@@ -238,7 +238,7 @@ function isInside(root, canonicalFull) {
 function inspectTarget(rule, target, context, full, canonicalFull, canonicalError) {
   const display = `${context.prefix}${target.path}`;
   if (canonicalError && canonicalError.code !== 'ENOENT') {
-    return { status: 'error', display, reason: `看不了目标路径（${canonicalError.message}）。` };
+    return { status: 'error', display, reason: '看不了目标路径，可能是其中一段不是文件夹，或者没有权限。这一轮不写。' };
   }
   if (!isInside(context.scanRoot, canonicalFull)) {
     return { status: 'error', display, reason: '目标路径跑到了目标根目录外面，这一轮不写。' };
