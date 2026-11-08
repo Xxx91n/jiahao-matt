@@ -229,10 +229,10 @@ function canonicalPath(value) {
   }
 }
 
-function blockedPathComponent(root, full) {
-  const relative = path.relative(root, full);
+function firstNonDirectoryAncestor(scanRoot, full) {
+  const relative = path.relative(scanRoot, full);
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  let current = root;
+  let current = scanRoot;
   for (const part of relative.split(path.sep).slice(0, -1)) {
     current = path.join(current, part);
     let stat;
@@ -271,7 +271,7 @@ function inspectTarget(rule, target, context, full, canonicalFull, canonicalErro
     originalBytes = fs.readFileSync(full);
   } catch (error) {
     if (error.code === 'ENOENT') {
-      const blocker = blockedPathComponent(context.scanRoot, full);
+      const blocker = firstNonDirectoryAncestor(context.scanRoot, full);
       if (blocker) {
         return {
           status: 'error',
