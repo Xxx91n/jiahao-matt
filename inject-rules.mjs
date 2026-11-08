@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Reads rules/*.md, scans the target skills folder, and reports what a write
-// would change. This version never writes; it only prints the report.
+// would change. A dry run only prints the report; `--apply` also writes the
+// reported blocks.
 //
 // Rule file shape:
 //
@@ -36,6 +37,7 @@ const STATUS_LABEL = {
 
 const HEADER_OPEN = '<!-- jiahao-rule';
 const KNOWN_POSITIONS = new Set(['after-paragraph']);
+const BACKUP_PREFIX = 'jiahao-backup-';
 
 function toSlashes(value) {
   return value.split(path.sep).join('/');
@@ -47,20 +49,25 @@ function ruleDisplayName(file) {
 
 function usage(problem) {
   console.error(problem);
-  console.error('用法：node inject-rules.mjs <target-root>');
+  console.error('用法：node inject-rules.mjs <target-root> [--apply]');
   process.exit(2);
 }
 
 function parseArgs(argv) {
   const positional = [];
+  let apply = false;
   for (const arg of argv) {
+    if (arg === '--apply') {
+      apply = true;
+      continue;
+    }
     if (arg.startsWith('-')) usage(`不认识的选项：${arg}`);
     positional.push(arg);
   }
   if (positional.length !== 1) usage('要给一个目标根目录，不能多也不能少。');
   const root = path.resolve(positional[0]);
   if (!fs.existsSync(root)) usage(`目标根目录不存在：${root}`);
-  return { root };
+  return { root, apply };
 }
 
 function ruleProblem(file, reason) {
@@ -186,24 +193,58 @@ function lineNumberAt(text, index) {
   return text.slice(0, index).split('\n').length;
 }
 
-function inspectTarget(rule, target, context) {
+function detectEol(text) {
+  const crlf = text.split('\r\n').length - 1;
+  const lf = text.split('\n').length - 1 - crlf;
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+function splitLines(text) {
+  const lines = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '\n') continue;
+    const end = i > start && text[i - 1] === '\r' ? i - 1 : i;
+    lines.push({ content: text.slice(start, end), end });
+    start = i + 1;
+  }
+  lines.push({ content: text.slice(start), end: text.length });
+  return lines;
+}
+
+function bodyWithEol(rule, eol) {
+  return rule.body.split('\n').join(eol);
+}
+
+function targetKey(full) {
+  const resolved = path.resolve(full);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function inspectTarget(rule, target, context, full) {
   const display = `${context.prefix}${target.path}`;
-  const full = path.join(context.scanRoot, target.path);
-  let text;
+  let originalBytes;
   try {
-    text = fs.readFileSync(full, 'utf8');
+    originalBytes = fs.readFileSync(full);
   } catch (error) {
     if (error.code === 'ENOENT') {
       return { status: 'error', display, reason: '文件不存在。' };
     }
     return { status: 'error', display, reason: `读不了这个文件（${error.message}）。` };
   }
-  text = text.replace(/\r\n/g, '\n');
 
+  const bom = originalBytes.length >= 3 && originalBytes[0] === 0xef && originalBytes[1] === 0xbb && originalBytes[2] === 0xbf;
+  const bodyBytes = originalBytes.subarray(bom ? 3 : 0);
+  const text = bodyBytes.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(bodyBytes)) {
+    return { status: 'error', display, reason: '文件里有不是 UTF-8 的字节，改它可能碰坏别的字节，这一轮不写。' };
+  }
+  const eol = detectEol(text);
   const startMarker = `<!-- jiahao:${rule.id}:start -->`;
   const endMarker = `<!-- jiahao:${rule.id}:end -->`;
   const startCount = text.split(startMarker).length - 1;
   const endCount = text.split(endMarker).length - 1;
+  const base = { display, full, originalBytes, text, eol, bom, startMarker, endMarker };
 
   if (startCount > 0 || endCount > 0) {
     if (startCount !== 1 || endCount !== 1) {
@@ -219,17 +260,17 @@ function inspectTarget(rule, target, context) {
       return { status: 'error', display, reason: '结束标记跑到了开始标记前面。' };
     }
     const between = text.slice(startAt + startMarker.length, endAt);
-    const expected = `\n${rule.body}\n`;
+    const expected = `${eol}${bodyWithEol(rule, eol)}${eol}`;
     if (between === expected) {
-      return { status: 'ok', display, line: lineNumberAt(text, startAt) };
+      return { ...base, status: 'ok', line: lineNumberAt(text, startAt) };
     }
-    return { status: 'replace', display, line: lineNumberAt(text, startAt) };
+    return { ...base, status: 'replace', line: lineNumberAt(text, startAt), startAt, endAt };
   }
 
-  const lines = text.split('\n');
+  const lines = splitLines(text);
   const hits = [];
   for (let i = 0; i < lines.length; i += 1) {
-    if (lines[i].includes(target.after)) hits.push(i);
+    if (lines[i].content.includes(target.after)) hits.push(i);
   }
   if (hits.length === 0) {
     return { status: 'error', display, reason: `找不到定位句：“${target.after}”` };
@@ -239,10 +280,107 @@ function inspectTarget(rule, target, context) {
   }
 
   let paragraphEnd = hits[0];
-  while (paragraphEnd + 1 < lines.length && lines[paragraphEnd + 1].trim() !== '') {
+  while (paragraphEnd + 1 < lines.length && lines[paragraphEnd + 1].content.trim() !== '') {
     paragraphEnd += 1;
   }
-  return { status: 'insert', display, line: paragraphEnd + 2 };
+  return { ...base, status: 'insert', line: paragraphEnd + 2, insertAt: lines[paragraphEnd].end };
+}
+
+function plannedText(rule, result) {
+  const body = bodyWithEol(rule, result.eol);
+  if (result.status === 'replace') {
+    return (
+      result.text.slice(0, result.startAt + result.startMarker.length) +
+      result.eol +
+      body +
+      result.eol +
+      result.text.slice(result.endAt)
+    );
+  }
+  const block = `${result.startMarker}${result.eol}${body}${result.eol}${result.endMarker}`;
+  return result.text.slice(0, result.insertAt) + result.eol + result.eol + block + result.text.slice(result.insertAt);
+}
+
+function encodeWithBom(text, bom) {
+  const body = Buffer.from(text, 'utf8');
+  if (!bom) return body;
+  return Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), body]);
+}
+
+function backupFolder(root) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let name = `${BACKUP_PREFIX}${stamp}`;
+  let suffix = 1;
+  while (fs.existsSync(path.join(root, name))) {
+    name = `${BACKUP_PREFIX}${stamp}-${suffix}`;
+    suffix += 1;
+  }
+  return path.join(root, name);
+}
+
+function writeAtomically(full, bytes) {
+  const temp = path.join(
+    path.dirname(full),
+    `.${path.basename(full)}.jiahao-${process.pid}-${Math.random().toString(16).slice(2)}`,
+  );
+  try {
+    fs.writeFileSync(temp, bytes);
+    fs.renameSync(temp, full);
+  } catch (error) {
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      // The original file is what matters; cleanup is best effort.
+    }
+    throw error;
+  }
+}
+
+function applyChanges(changes, context) {
+  if (changes.length === 0) {
+    console.log('这次没有任何文件需要改。');
+    return true;
+  }
+  let backupDir;
+  try {
+    backupDir = backupFolder(context.root);
+    fs.mkdirSync(backupDir, { recursive: true });
+    for (const { result } of changes) {
+      const copy = path.join(backupDir, path.relative(context.root, result.full));
+      fs.mkdirSync(path.dirname(copy), { recursive: true });
+      fs.writeFileSync(copy, result.originalBytes);
+    }
+  } catch (error) {
+    console.log(`${STATUS_LABEL.error} 备份失败：${error.message}。这次一个文件也没有写。`);
+    return false;
+  }
+
+  const written = [];
+  try {
+    for (const { rule, result } of changes) {
+      writeAtomically(result.full, encodeWithBom(plannedText(rule, result), result.bom));
+      written.push(result);
+    }
+    console.log(
+      `已写入 ${changes.length} 个文件；备份在：${toSlashes(path.relative(context.root, backupDir))}`,
+    );
+    return true;
+  } catch (error) {
+    let rollbackProblem = false;
+    for (const result of written.reverse()) {
+      try {
+        writeAtomically(result.full, result.originalBytes);
+      } catch {
+        rollbackProblem = true;
+      }
+    }
+    if (rollbackProblem) {
+      console.log(`${STATUS_LABEL.error} 写文件失败：${error.message}。有文件没恢复成功，请用备份还原。`);
+    } else {
+      console.log(`${STATUS_LABEL.error} 写文件失败：${error.message}。已经改过的文件都恢复了原样。`);
+    }
+    return false;
+  }
 }
 
 function collectFiles(dir, out) {
@@ -253,7 +391,7 @@ function collectFiles(dir, out) {
     return;
   }
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (entry.name === '.git' || entry.name === 'node_modules') continue;
+    if (entry.name === '.git' || entry.name === 'node_modules' || entry.name.startsWith(BACKUP_PREFIX)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       collectFiles(full, out);
@@ -301,20 +439,36 @@ function main() {
   const counts = { insert: 0, replace: 0, ok: 0, error: ruleErrors.length };
   const targetFiles = new Set();
   const plannedTargets = [];
+  const seenKeys = new Set();
+  const duplicateKeys = new Set();
   for (const rule of rules) {
     for (const target of rule.targets) {
-      plannedTargets.push({ rule, target });
-      targetFiles.add(path.join(context.layout.scanRoot, target.path));
+      const full = path.join(context.layout.scanRoot, target.path);
+      plannedTargets.push({ rule, target, full });
+      targetFiles.add(full);
+      const key = targetKey(full);
+      if (seenKeys.has(key)) duplicateKeys.add(key);
+      seenKeys.add(key);
     }
   }
 
-  for (const { rule, target } of plannedTargets) {
-    const result = inspectTarget(rule, target, context.layout);
+  const changes = [];
+  for (const { rule, target, full } of plannedTargets) {
+    if (duplicateKeys.has(targetKey(full))) {
+      counts.error += 1;
+      console.log(
+        `${STATUS_LABEL.error} ${rule.id} → ${context.layout.prefix}${target.path}：这个文件被不止一个目标块指到了，这一轮不写。`,
+      );
+      continue;
+    }
+    const result = inspectTarget(rule, target, context.layout, full);
     if (result.status === 'insert') {
       counts.insert += 1;
+      changes.push({ rule, result });
       console.log(`${STATUS_LABEL.insert} ${rule.id} → ${result.display}:${result.line}（放在定位句那一段的后面）`);
     } else if (result.status === 'replace') {
       counts.replace += 1;
+      changes.push({ rule, result });
       console.log(`${STATUS_LABEL.replace} ${rule.id} → ${result.display}:${result.line}（开始标记在这一行，块里的内容要换）`);
     } else if (result.status === 'ok') {
       counts.ok += 1;
@@ -338,9 +492,20 @@ function main() {
       `会插入 ${counts.insert}，会替换 ${counts.replace}，没问题 ${counts.ok}，出错了 ${counts.error}；` +
       `候选 ${candidateCount} 个。`,
   );
-  console.log('这次是试运行，一个文件也没有写。');
 
-  process.exitCode = counts.error > 0 ? 1 : 0;
+  if (!context.apply) {
+    console.log('这次是试运行，一个文件也没有写。');
+    process.exitCode = counts.error > 0 ? 1 : 0;
+    return;
+  }
+
+  if (counts.error > 0) {
+    console.log('有出错了的目标，这一轮一个文件也没有写。');
+    process.exitCode = 1;
+    return;
+  }
+
+  process.exitCode = applyChanges(changes, context) ? 0 : 3;
 }
 
 try {
