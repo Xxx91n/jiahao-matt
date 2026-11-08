@@ -9,7 +9,7 @@
     "url": "git+https://github.com/Xxx91n/jiahao-matt.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.1.0"
   },
   "scripts": {
     "check": "node --check inject-rules.mjs && node --check test/inject-rules.test.mjs",
