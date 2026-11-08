@@ -351,6 +351,40 @@ test('--skip 写两次：两个目标都跳过，退出 0，也不建备份', (t
   assertSameFiles(before, snapshot(dir));
 });
 
+test('--skip：路径对不上任何目标时只提示，不拦这次写入', (t) => {
+  const dir = makeTempDir(t);
+  copyInstalledFixture(dir);
+
+  const result = run(dir, '--apply', '--skip', 'engineering/no-such/SKILL.md');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /没有跳过任何东西/);
+  assert.ok(!result.stdout.includes('[出错了]'), result.stdout);
+  assert.equal(linesStartingWith(result.stdout, '[会插入]').length, 2, result.stdout);
+  assert.equal(backupDirs(dir).length, 1, '正常写入时应该有备份');
+
+  for (const [target, marker] of [
+    [TARGET, MARKER_START],
+    [GRILLING_TARGET, GRILLING_MARKER_START],
+  ]) {
+    const text = fs.readFileSync(path.join(dir, target), 'utf8');
+    assert.equal(text.split(marker).length - 1, 1, `${target} 应该被写入`);
+  }
+});
+
+test('--skip：同一个目标的两种写法一起给，也不会报没跳过', (t) => {
+  const dir = makeTempDir(t);
+  copyInstalledFixture(dir);
+  const targetPath = path.join(dir, TARGET);
+  const skippedBefore = fs.readFileSync(targetPath);
+
+  const result = run(dir, '--apply', '--skip', `./${TARGET}`, '--skip', TARGET);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(linesStartingWith(result.stdout, '[跳过]').length, 1, result.stdout);
+  assert.equal(linesStartingWith(result.stdout, '[会插入]').length, 1, result.stdout);
+  assert.ok(!result.stdout.includes('没有跳过任何东西'), result.stdout);
+  assert.ok(fs.readFileSync(targetPath).equals(skippedBefore), '被跳过的文件应该一个字节都不变');
+});
+
 test('--skip：仓库布局下认带 skills/ 前缀的路径', (t) => {
   const dir = makeTempDir(t);
   copyInstalledFixture(dir, { underSkills: true });

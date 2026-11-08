@@ -249,9 +249,9 @@ function skipAcceptedPaths(target, layout) {
   );
 }
 
-function isSkipped(skips, target, layout) {
+function matchingSkips(skips, target, layout) {
   const accepted = skipAcceptedPaths(target, layout);
-  return skips.some((value) => accepted.has(normalizeSkipPath(value)));
+  return skips.filter((value) => accepted.has(normalizeSkipPath(value)));
 }
 
 function canonicalPath(value) {
@@ -522,6 +522,7 @@ function main() {
   for (const message of ruleErrors) console.log(`${STATUS_LABEL.error} ${message}`);
 
   const counts = { insert: 0, replace: 0, ok: 0, skip: 0, error: ruleErrors.length };
+  const matchedSkips = new Set();
   const targetFiles = new Set();
   const plannedTargets = [];
   const seenKeys = new Set();
@@ -546,6 +547,8 @@ function main() {
 
   const changes = [];
   for (const { rule, target, full, canonicalFull, canonicalError } of plannedTargets) {
+    const skipMatches = matchingSkips(context.skips, target, context.layout);
+    for (const value of skipMatches) matchedSkips.add(value);
     if (duplicateKeys.has(targetKey(canonicalFull))) {
       counts.error += 1;
       console.log(
@@ -553,7 +556,7 @@ function main() {
       );
       continue;
     }
-    if (isSkipped(context.skips, target, context.layout)) {
+    if (skipMatches.length > 0) {
       counts.skip += 1;
       console.log(
         `${STATUS_LABEL.skip} ${rule.id} → ${context.layout.prefix}${target.path}（--skip 点了它，这一轮不改这个文件）`,
@@ -576,6 +579,11 @@ function main() {
       counts.error += 1;
       console.log(`${STATUS_LABEL.error} ${rule.id} → ${result.display}：${result.reason}`);
     }
+  }
+
+  for (const value of context.skips) {
+    if (matchedSkips.has(value)) continue;
+    console.log(`注意：--skip “${value}” 没有对应的目标文件，这次没有跳过任何东西。`);
   }
 
   let candidateCount = 0;
