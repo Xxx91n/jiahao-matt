@@ -14,6 +14,7 @@ const CANDIDATE = 'engineering/tdd/SKILL.md';
 const SENTENCE = 'When a term is resolved, update `GLOSSARY.md` right there.';
 const MARKER_START = '<!-- jiahao:glossary-gate:start -->';
 const MARKER_END = '<!-- jiahao:glossary-gate:end -->';
+const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const BODY_START = "**A term is the user's decision.**";
 
 function makeTempDir(t) {
@@ -81,6 +82,64 @@ function outputLines(stdout) {
 
 function linesStartingWith(stdout, word) {
   return outputLines(stdout).filter((line) => line.startsWith(word));
+}
+
+function asCrlf(text) {
+  return text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+}
+
+function asLf(text) {
+  return text.replace(/\r\n/g, '\n');
+}
+
+function loneLfCount(text) {
+  let count = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\n' && text[i - 1] !== '\r') count += 1;
+  }
+  return count;
+}
+
+function withoutInsertedBlock(text, eol) {
+  const startAt = text.indexOf(MARKER_START);
+  const endAt = text.indexOf(MARKER_END);
+  assert.notEqual(startAt, -1, '应该有开始标记');
+  assert.notEqual(endAt, -1, '应该有结束标记');
+  assert.ok(endAt > startAt, '结束标记应该在开始标记后面');
+  const removeFrom = startAt - 2 * eol.length;
+  assert.ok(removeFrom >= 0, '插入的块前面应该有两个换行');
+  return text.slice(0, removeFrom) + text.slice(endAt + MARKER_END.length);
+}
+
+function runApplyOnRewrittenTarget(t, rewrite) {
+  const dir = makeTempDir(t);
+  copyInstalledFixture(dir);
+  const targetPath = path.join(dir, TARGET);
+  rewrite(targetPath);
+  const beforeBytes = fs.readFileSync(targetPath);
+  const beforeIno = fs.statSync(targetPath).ino;
+  const result = run(dir, '--apply');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(linesStartingWith(result.stdout, '[会插入]').length, 1, result.stdout);
+  assert.match(result.stdout, /备份在/);
+  const afterBytes = fs.readFileSync(targetPath);
+  const afterIno = fs.statSync(targetPath).ino;
+  if (beforeIno !== 0 && afterIno !== 0) {
+    assert.notEqual(afterIno, beforeIno, '目标文件应该被整个换掉，而不是原地改写');
+  }
+  const afterText = afterBytes.toString('utf8');
+  assert.equal(afterText.split(MARKER_START).length - 1, 1, '开始标记应该只有一个');
+  assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
+  return { beforeBytes, afterBytes, afterText };
+}
+
+function protectFromWrites(targetPath) {
+  if (process.platform === 'win32') {
+    fs.chmodSync(targetPath, 0o444);
+    return () => fs.chmodSync(targetPath, 0o666);
+  }
+  fs.chmodSync(path.dirname(targetPath), 0o555);
+  return () => fs.chmodSync(path.dirname(targetPath), 0o755);
 }
 
 const FIXTURE_TARGET_LINE = 62;
@@ -195,11 +254,7 @@ test('--apply：插入一对标记和规则正文，块外每个字节都原样'
   assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
   assert.ok(afterText.includes(BODY_START), '规则正文应该写进目标文件');
 
-  const startAt = afterText.indexOf(MARKER_START);
-  const endAt = afterText.indexOf(MARKER_END);
-  const removeFrom = startAt - 2 * eol.length;
-  assert.ok(removeFrom >= 0, '插入的块前面应该有两个换行');
-  const restored = afterText.slice(0, removeFrom) + afterText.slice(endAt + MARKER_END.length);
+  const restored = withoutInsertedBlock(afterText, eol);
   assert.ok(Buffer.from(restored, 'utf8').equals(beforeBytes), '除了插入的块，其他字节必须原样');
 });
 
@@ -242,6 +297,45 @@ test('--apply：规则正文改了，重跑替换旧块，标记还是一对', (
   assert.ok(!afterText.includes('answer decides the term, not you.'), '旧正文应该被换掉');
 });
 
+test('--apply：替换旧块时 CRLF 和 BOM 也不变，去掉块后和最初输入逐字节相同', (t) => {
+  const isolated = makeIsolatedRunner(t);
+  const targetPath = path.join(isolated.target, TARGET);
+  const inputText = fs.readFileSync(targetPath, 'utf8');
+  const withBom = Buffer.concat([BOM, Buffer.from(asCrlf(inputText))]);
+  fs.writeFileSync(targetPath, withBom);
+
+  const first = runScript(isolated.script, isolated.target, '--apply');
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.equal(linesStartingWith(first.stdout, '[会插入]').length, 1, first.stdout);
+
+  const originalRule = fs.readFileSync(isolated.ruleFile, 'utf8').replace(/\r\n/g, '\n');
+  const changedRule = originalRule.replace(
+    'answer decides the term, not you.',
+    'answer decides the term, and nobody else.',
+  );
+  assert.notEqual(changedRule, originalRule, '测试规则文件应该改得动');
+  fs.writeFileSync(isolated.ruleFile, changedRule);
+
+  const second = runScript(isolated.script, isolated.target, '--apply');
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.equal(linesStartingWith(second.stdout, '[会替换]').length, 1, second.stdout);
+  assert.match(second.stdout, /备份在/);
+
+  const afterBytes = fs.readFileSync(targetPath);
+  const afterText = afterBytes.toString('utf8');
+  assert.deepEqual([...afterBytes.subarray(0, 3)], [...BOM], 'BOM 应该还在最前面');
+  assert.ok(!afterBytes.subarray(3, 6).equals(BOM), 'BOM 不该出现两次');
+  assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
+  assert.equal(loneLfCount(afterText), 0, 'CRLF 文件里不该出现单独的 LF');
+  assert.equal(afterText.split(MARKER_START).length - 1, 1, '替换后开始标记还是一个');
+  assert.equal(afterText.split(MARKER_END).length - 1, 1, '替换后结束标记还是一个');
+  assert.ok(afterText.includes('and nobody else.'), '新正文应该在文件里');
+  assert.ok(
+    Buffer.from(withoutInsertedBlock(afterText, '\r\n'), 'utf8').equals(withBom),
+    '去掉块后必须和最初输入逐字节相同',
+  );
+});
+
 test('--apply：改过的文件先复制进时间戳备份文件夹', (t) => {
   const dir = makeTempDir(t);
   copyInstalledFixture(dir);
@@ -276,6 +370,62 @@ test('--apply：仓库克隆下按带 skills/ 前缀的路径写入和备份', (
   const copyPath = path.join(backups[0], 'skills', TARGET);
   assert.ok(fs.existsSync(copyPath), `备份里应该有 skills/${TARGET}`);
   assert.ok(fs.readFileSync(copyPath).equals(beforeBytes), '备份应该是改动前的原样字节');
+});
+
+test('--apply：CRLF 文件只加 CRLF 行，去掉插入块后和输入逐字节相同', (t) => {
+  const { beforeBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
+    fs.writeFileSync(targetPath, asCrlf(fs.readFileSync(targetPath, 'utf8')));
+  });
+  const beforeText = beforeBytes.toString('utf8');
+  assert.ok(beforeText.includes('\r\n'), '测试输入应该先变成纯 CRLF');
+  assert.equal(loneLfCount(beforeText), 0, '测试输入里不该有单独的 LF');
+  assert.equal(loneLfCount(afterText), 0, 'CRLF 文件里不该出现单独的 LF');
+  assert.ok(
+    Buffer.from(withoutInsertedBlock(afterText, '\r\n'), 'utf8').equals(beforeBytes),
+    '去掉插入块后必须和 CRLF 输入一样',
+  );
+});
+
+test('--apply：LF 文件只加 LF 行，一个回车都不多，去掉插入块后和输入逐字节相同', (t) => {
+  const { beforeBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
+    fs.writeFileSync(targetPath, asLf(fs.readFileSync(targetPath, 'utf8')));
+  });
+  assert.ok(!beforeBytes.toString('utf8').includes('\r'), '测试输入应该是纯 LF');
+  assert.ok(!afterText.includes('\r'), 'LF 文件里不该出现回车');
+  assert.ok(
+    Buffer.from(withoutInsertedBlock(afterText, '\n'), 'utf8').equals(beforeBytes),
+    '去掉插入块后必须和 LF 输入一样',
+  );
+});
+
+test('--apply：带 BOM 的文件写完 BOM 还在最前面，去掉插入块后和输入逐字节相同', async (t) => {
+  const variants = [
+    { label: 'LF', eol: '\n', toText: asLf },
+    { label: 'CRLF', eol: '\r\n', toText: asCrlf },
+  ];
+  for (const variant of variants) {
+    await t.test(variant.label, (st) => {
+      const { beforeBytes: withBom, afterBytes, afterText } = runApplyOnRewrittenTarget(st, (targetPath) => {
+        const original = fs.readFileSync(targetPath, 'utf8');
+        fs.writeFileSync(
+          targetPath,
+          Buffer.concat([BOM, Buffer.from(variant.toText(original))]),
+        );
+      });
+      assert.deepEqual([...afterBytes.subarray(0, 3)], [...BOM], 'BOM 应该是最前面的三个字节');
+      assert.ok(!afterBytes.subarray(3, 6).equals(BOM), 'BOM 不该出现两次');
+      assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
+      if (variant.eol === '\n') {
+        assert.ok(!afterText.includes('\r'), '带 BOM 的 LF 文件里不该出现回车');
+      } else {
+        assert.equal(loneLfCount(afterText), 0, '带 BOM 的 CRLF 文件里不该出现单独的 LF');
+      }
+      assert.ok(
+        Buffer.from(withoutInsertedBlock(afterText, variant.eol), 'utf8').equals(withBom),
+        `去掉插入块后必须和带 BOM 的 ${variant.label} 输入一样`,
+      );
+    });
+  }
 });
 
 test('--apply：一个目标找不到定位句时，所有目标都不写', (t) => {
@@ -348,7 +498,8 @@ test('--apply：目标路径中有一段不是文件夹时报错，这次全部�
   const result = runScript(isolated.script, isolated.target, '--apply');
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /\[出错了\]/);
-  assert.match(result.stdout, /不是文件夹/);
+  assert.match(result.stdout, /中间有一段不是文件夹/);
+  assert.match(result.stdout, /not-a-dir/);
   assert.match(result.stdout, /\[会插入\]/, '另一个正常目标应该照样报出来');
   assert.equal(backupDirs(isolated.target).length, 0, '出错时不该有备份文件夹');
   assertSameFiles(before, snapshot(isolated.target));
@@ -444,6 +595,36 @@ test(
 );
 
 test(
+  '--apply：唯一的目标写不进去时退出 3，原文件不动，不留临时文件',
+  { skip: process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() === 0 },
+  (t) => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'jiahao-matt-'));
+    const target = path.join(base, 'target');
+    copyInstalledFixture(target);
+    const targetPath = path.join(target, TARGET);
+    const beforeBytes = fs.readFileSync(targetPath);
+
+    let restore = () => {};
+    t.after(() => {
+      restore();
+      fs.rmSync(base, { recursive: true, force: true });
+    });
+    restore = protectFromWrites(targetPath);
+
+    const result = run(target, '--apply');
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.match(result.stdout, /\[出错了\]/);
+    assert.match(result.stdout, /写文件失败/);
+    assert.ok(fs.readFileSync(targetPath).equals(beforeBytes), '原文件应该一个字节都不变');
+    const leftovers = fs
+      .readdirSync(path.dirname(targetPath))
+      .filter((name) => name.includes('.jiahao-'));
+    assert.deepEqual(leftovers, [], '临时文件不该留在目标文件夹里');
+    assert.equal(backupDirs(target).length, 1, '写失败时备份应该还在');
+  },
+);
+
+test(
   '--apply：第二个文件写不进去时退出 3，先写的文件恢复原样',
   { skip: process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() === 0 },
   (t) => {
@@ -474,18 +655,12 @@ test(
   const firstPath = path.join(target, TARGET);
   const firstBefore = fs.readFileSync(firstPath);
 
-  let restore;
-  if (process.platform === 'win32') {
-    fs.chmodSync(secondPath, 0o444);
-    restore = () => fs.chmodSync(secondPath, 0o666);
-  } else {
-    fs.chmodSync(path.dirname(secondPath), 0o555);
-    restore = () => fs.chmodSync(path.dirname(secondPath), 0o755);
-  }
+  let restore = () => {};
   t.after(() => {
     restore();
     fs.rmSync(base, { recursive: true, force: true });
   });
+  restore = protectFromWrites(secondPath);
 
   const result = runScript(path.join(runner, 'inject-rules.mjs'), target, '--apply');
   assert.equal(result.status, 3, result.stdout + result.stderr);

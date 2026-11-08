@@ -229,6 +229,23 @@ function canonicalPath(value) {
   }
 }
 
+function firstNonDirectoryAncestor(scanRoot, full) {
+  const relative = path.relative(scanRoot, full);
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  let current = scanRoot;
+  for (const part of relative.split(path.sep).slice(0, -1)) {
+    current = path.join(current, part);
+    let stat;
+    try {
+      stat = fs.statSync(current);
+    } catch {
+      return null;
+    }
+    if (!stat.isDirectory()) return current;
+  }
+  return null;
+}
+
 function isInside(root, canonicalFull) {
   const rootKey = targetKey(canonicalPath(root).path);
   const fullKey = targetKey(canonicalFull);
@@ -237,6 +254,14 @@ function isInside(root, canonicalFull) {
 
 function inspectTarget(rule, target, context, full, canonicalFull, canonicalError) {
   const display = `${context.prefix}${target.path}`;
+  const blocker = firstNonDirectoryAncestor(context.scanRoot, full);
+  if (blocker) {
+    return {
+      status: 'error',
+      display,
+      reason: `中间有一段不是文件夹：${toSlashes(path.relative(context.root, blocker))}。这一轮不写。`,
+    };
+  }
   if (canonicalError && canonicalError.code !== 'ENOENT') {
     return { status: 'error', display, reason: '看不了目标路径，可能是其中一段不是文件夹，或者没有权限。这一轮不写。' };
   }
