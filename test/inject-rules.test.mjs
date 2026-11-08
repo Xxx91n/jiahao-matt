@@ -116,15 +116,29 @@ function runApplyOnRewrittenTarget(t, rewrite) {
   const targetPath = path.join(dir, TARGET);
   rewrite(targetPath);
   const beforeBytes = fs.readFileSync(targetPath);
+  const beforeIno = fs.statSync(targetPath).ino;
   const result = run(dir, '--apply');
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(linesStartingWith(result.stdout, '[会插入]').length, 1, result.stdout);
   assert.match(result.stdout, /备份在/);
   const afterBytes = fs.readFileSync(targetPath);
+  const afterIno = fs.statSync(targetPath).ino;
+  if (beforeIno !== 0 && afterIno !== 0) {
+    assert.notEqual(afterIno, beforeIno, '目标文件应该被整个换掉，而不是原地改写');
+  }
   const afterText = afterBytes.toString('utf8');
   assert.equal(afterText.split(MARKER_START).length - 1, 1, '开始标记应该只有一个');
   assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
   return { beforeBytes, afterBytes, afterText };
+}
+
+function protectFromWrites(targetPath) {
+  if (process.platform === 'win32') {
+    fs.chmodSync(targetPath, 0o444);
+    return () => fs.chmodSync(targetPath, 0o666);
+  }
+  fs.chmodSync(path.dirname(targetPath), 0o555);
+  return () => fs.chmodSync(path.dirname(targetPath), 0o755);
 }
 
 const FIXTURE_TARGET_LINE = 62;
@@ -344,20 +358,34 @@ test('--apply：LF 文件只加 LF 行，一个回车都不多，去掉插入块
   );
 });
 
-test('--apply：带 BOM 的文件写完 BOM 还在最前面，去掉插入块后和输入逐字节相同', (t) => {
-  const { beforeBytes: withBom, afterBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
-    const original = fs.readFileSync(targetPath, 'utf8');
-    fs.writeFileSync(targetPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(asLf(original))]));
-  });
-  assert.ok(!withBom.toString('utf8').includes('\r'), '测试输入应该是带 BOM 的纯 LF');
-  assert.deepEqual([...afterBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM 应该是最前面的三个字节');
-  assert.ok(!(afterBytes[3] === 0xef && afterBytes[4] === 0xbb && afterBytes[5] === 0xbf), 'BOM 不该出现两次');
-  assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
-  assert.ok(!afterText.includes('\r'), '带 BOM 的 LF 文件里不该出现回车');
-  assert.ok(
-    Buffer.from(withoutInsertedBlock(afterText, '\n'), 'utf8').equals(withBom),
-    '去掉插入块后必须和带 BOM 的输入一样',
-  );
+test('--apply：带 BOM 的文件写完 BOM 还在最前面，去掉插入块后和输入逐字节相同', async (t) => {
+  const variants = [
+    { label: 'LF', eol: '\n', toText: asLf },
+    { label: 'CRLF', eol: '\r\n', toText: asCrlf },
+  ];
+  for (const variant of variants) {
+    await t.test(variant.label, (st) => {
+      const { beforeBytes: withBom, afterBytes, afterText } = runApplyOnRewrittenTarget(st, (targetPath) => {
+        const original = fs.readFileSync(targetPath, 'utf8');
+        fs.writeFileSync(
+          targetPath,
+          Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(variant.toText(original))]),
+        );
+      });
+      assert.deepEqual([...afterBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM 应该是最前面的三个字节');
+      assert.ok(!(afterBytes[3] === 0xef && afterBytes[4] === 0xbb && afterBytes[5] === 0xbf), 'BOM 不该出现两次');
+      assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
+      if (variant.eol === '\n') {
+        assert.ok(!afterText.includes('\r'), '带 BOM 的 LF 文件里不该出现回车');
+      } else {
+        assert.equal(loneLfCount(afterText), 0, '带 BOM 的 CRLF 文件里不该出现单独的 LF');
+      }
+      assert.ok(
+        Buffer.from(withoutInsertedBlock(afterText, variant.eol), 'utf8').equals(withBom),
+        `去掉插入块后必须和带 BOM 的 ${variant.label} 输入一样`,
+      );
+    });
+  }
 });
 
 test('--apply：一个目标找不到定位句时，所有目标都不写', (t) => {
@@ -430,7 +458,8 @@ test('--apply：目标路径中有一段不是文件夹时报错，这次全部�
   const result = runScript(isolated.script, isolated.target, '--apply');
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /\[出错了\]/);
-  assert.match(result.stdout, /不是文件夹/);
+  assert.match(result.stdout, /中间有一段不是文件夹/);
+  assert.match(result.stdout, /not-a-dir/);
   assert.match(result.stdout, /\[会插入\]/, '另一个正常目标应该照样报出来');
   assert.equal(backupDirs(isolated.target).length, 0, '出错时不该有备份文件夹');
   assertSameFiles(before, snapshot(isolated.target));
@@ -535,14 +564,7 @@ test(
     const targetPath = path.join(target, TARGET);
     const beforeBytes = fs.readFileSync(targetPath);
 
-    let restore;
-    if (process.platform === 'win32') {
-      fs.chmodSync(targetPath, 0o444);
-      restore = () => fs.chmodSync(targetPath, 0o666);
-    } else {
-      fs.chmodSync(path.dirname(targetPath), 0o555);
-      restore = () => fs.chmodSync(path.dirname(targetPath), 0o755);
-    }
+    const restore = protectFromWrites(targetPath);
     t.after(() => {
       restore();
       fs.rmSync(base, { recursive: true, force: true });
@@ -592,14 +614,7 @@ test(
   const firstPath = path.join(target, TARGET);
   const firstBefore = fs.readFileSync(firstPath);
 
-  let restore;
-  if (process.platform === 'win32') {
-    fs.chmodSync(secondPath, 0o444);
-    restore = () => fs.chmodSync(secondPath, 0o666);
-  } else {
-    fs.chmodSync(path.dirname(secondPath), 0o555);
-    restore = () => fs.chmodSync(path.dirname(secondPath), 0o755);
-  }
+  const restore = protectFromWrites(secondPath);
   t.after(() => {
     restore();
     fs.rmSync(base, { recursive: true, force: true });

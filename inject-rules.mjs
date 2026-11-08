@@ -254,6 +254,14 @@ function isInside(root, canonicalFull) {
 
 function inspectTarget(rule, target, context, full, canonicalFull, canonicalError) {
   const display = `${context.prefix}${target.path}`;
+  const blocker = firstNonDirectoryAncestor(context.scanRoot, full);
+  if (blocker) {
+    return {
+      status: 'error',
+      display,
+      reason: `中间有一段不是文件夹：${toSlashes(path.relative(context.root, blocker))}。这一轮不写。`,
+    };
+  }
   if (canonicalError && canonicalError.code !== 'ENOENT') {
     return { status: 'error', display, reason: '看不了目标路径，可能是其中一段不是文件夹，或者没有权限。这一轮不写。' };
   }
@@ -271,14 +279,6 @@ function inspectTarget(rule, target, context, full, canonicalFull, canonicalErro
     originalBytes = fs.readFileSync(full);
   } catch (error) {
     if (error.code === 'ENOENT') {
-      const blocker = firstNonDirectoryAncestor(context.scanRoot, full);
-      if (blocker) {
-        return {
-          status: 'error',
-          display,
-          reason: `中间有一段不是文件夹：${toSlashes(path.relative(context.root, blocker))}。这一轮不写。`,
-        };
-      }
       return { status: 'error', display, reason: '文件不存在。' };
     }
     return { status: 'error', display, reason: `读不了这个文件（${error.message}）。` };
