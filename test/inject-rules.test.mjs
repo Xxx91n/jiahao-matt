@@ -331,6 +331,73 @@ test('--apply：目标文件里有非 UTF-8 字节时，报错且一个字也不
   assert.equal(backupDirs(isolated.target).length, 0, '出错时不该有备份文件夹');
 });
 
+test('--apply：目标路径跑到目标根目录外面时报错，谁都不写', (t) => {
+  const isolated = makeIsolatedRunner(t);
+  const base = path.dirname(isolated.target);
+  const outside = path.join(base, 'outside.md');
+  fs.writeFileSync(outside, `${SENTENCE}\n`);
+  const outsideBefore = fs.readFileSync(outside);
+
+  const originalRule = fs.readFileSync(isolated.ruleFile, 'utf8').replace(/\r\n/g, '\n');
+  const changedRule = originalRule.replace(
+    '\n-->',
+    `\ntarget:\npath: ../outside.md\nafter: ${SENTENCE}\nposition: after-paragraph\n-->`,
+  );
+  assert.notEqual(changedRule, originalRule, '测试规则文件应该加得进越界目标');
+  fs.writeFileSync(isolated.ruleFile, changedRule);
+
+  const before = snapshot(isolated.target);
+  const result = runScript(isolated.script, isolated.target, '--apply');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /\[出错了\]/);
+  assert.match(result.stdout, /目标根目录外面/);
+  assert.ok(fs.readFileSync(outside).equals(outsideBefore), '根目录外的文件应该一个字节都不变');
+  assert.equal(backupDirs(isolated.target).length, 0, '出错时不该有备份文件夹');
+  assertSameFiles(before, snapshot(isolated.target));
+});
+
+test(
+  '--apply：目标是根目录外的符号链接时报错，链接目标不变',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const isolated = makeIsolatedRunner(t);
+    const outside = path.join(path.dirname(isolated.target), 'linked-outside.md');
+    fs.writeFileSync(outside, `${SENTENCE}\n`);
+    const outsideBefore = fs.readFileSync(outside);
+
+    const targetPath = path.join(isolated.target, TARGET);
+    fs.rmSync(targetPath);
+    fs.symlinkSync(outside, targetPath);
+
+    const result = runScript(isolated.script, isolated.target, '--apply');
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /\[出错了\]/);
+    assert.match(result.stdout, /目标根目录外面/);
+    assert.ok(fs.readFileSync(outside).equals(outsideBefore), '链接到根目录外的文件应该一个字节都不变');
+    assert.equal(backupDirs(isolated.target).length, 0, '出错时不该有备份文件夹');
+  },
+);
+
+test(
+  '--apply：写入后目标文件和备份都保留原来的权限',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const dir = makeTempDir(t);
+    copyInstalledFixture(dir);
+    const targetPath = path.join(dir, TARGET);
+    fs.chmodSync(targetPath, 0o600);
+
+    const result = run(dir, '--apply');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(fs.statSync(targetPath).mode & 0o777, 0o600, '目标文件的权限应该保持 600');
+
+    const backups = backupDirs(dir);
+    assert.equal(backups.length, 1, `应该正好有一个备份文件夹：${backups.join(', ')}`);
+    const copyPath = path.join(backups[0], TARGET);
+    assert.equal(fs.statSync(copyPath).mode & 0o777, 0o600, '备份文件的权限应该也是 600');
+  },
+);
+
 test(
   '--apply：第二个文件写不进去时退出 3，先写的文件恢复原样',
   { skip: process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() === 0 },

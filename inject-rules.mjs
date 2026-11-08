@@ -221,10 +221,30 @@ function targetKey(full) {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
+function realPath(value) {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+function isInside(root, full) {
+  const rootKey = targetKey(realPath(root));
+  const fullKey = targetKey(realPath(full));
+  return fullKey.startsWith(`${rootKey}${path.sep}`);
+}
+
 function inspectTarget(rule, target, context, full) {
   const display = `${context.prefix}${target.path}`;
+  if (!isInside(context.scanRoot, full)) {
+    return { status: 'error', display, reason: '目标路径跑到了目标根目录外面，这一轮不写。' };
+  }
   let originalBytes;
+  let mode;
   try {
+    const stat = fs.statSync(full);
+    mode = stat.mode & 0o777;
     originalBytes = fs.readFileSync(full);
   } catch (error) {
     if (error.code === 'ENOENT') {
@@ -244,7 +264,7 @@ function inspectTarget(rule, target, context, full) {
   const endMarker = `<!-- jiahao:${rule.id}:end -->`;
   const startCount = text.split(startMarker).length - 1;
   const endCount = text.split(endMarker).length - 1;
-  const base = { display, full, originalBytes, text, eol, bom, startMarker, endMarker };
+  const base = { display, full, originalBytes, mode, text, eol, bom, startMarker, endMarker };
 
   if (startCount > 0 || endCount > 0) {
     if (startCount !== 1 || endCount !== 1) {
@@ -318,13 +338,14 @@ function backupFolder(root) {
   return path.join(root, name);
 }
 
-function writeAtomically(full, bytes) {
+function writeAtomically(full, bytes, mode) {
   const temp = path.join(
     path.dirname(full),
     `.${path.basename(full)}.jiahao-${process.pid}-${Math.random().toString(16).slice(2)}`,
   );
   try {
     fs.writeFileSync(temp, bytes);
+    if (mode !== undefined) fs.chmodSync(temp, mode);
     fs.renameSync(temp, full);
   } catch (error) {
     try {
@@ -349,6 +370,7 @@ function applyChanges(changes, context) {
       const copy = path.join(backupDir, path.relative(context.root, result.full));
       fs.mkdirSync(path.dirname(copy), { recursive: true });
       fs.writeFileSync(copy, result.originalBytes);
+      fs.chmodSync(copy, 0o600);
     }
   } catch (error) {
     console.log(`${STATUS_LABEL.error} 备份失败：${error.message}。这次一个文件也没有写。`);
@@ -358,7 +380,7 @@ function applyChanges(changes, context) {
   const written = [];
   try {
     for (const { rule, result } of changes) {
-      writeAtomically(result.full, encodeWithBom(plannedText(rule, result), result.bom));
+      writeAtomically(result.full, encodeWithBom(plannedText(rule, result), result.bom), result.mode);
       written.push(result);
     }
     console.log(
@@ -369,7 +391,7 @@ function applyChanges(changes, context) {
     let rollbackProblem = false;
     for (const result of written.reverse()) {
       try {
-        writeAtomically(result.full, result.originalBytes);
+        writeAtomically(result.full, result.originalBytes, result.mode);
       } catch {
         rollbackProblem = true;
       }
