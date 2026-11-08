@@ -229,6 +229,23 @@ function canonicalPath(value) {
   }
 }
 
+function blockedPathComponent(root, full) {
+  const relative = path.relative(root, full);
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  let current = root;
+  for (const part of relative.split(path.sep).slice(0, -1)) {
+    current = path.join(current, part);
+    let stat;
+    try {
+      stat = fs.statSync(current);
+    } catch {
+      return null;
+    }
+    if (!stat.isDirectory()) return current;
+  }
+  return null;
+}
+
 function isInside(root, canonicalFull) {
   const rootKey = targetKey(canonicalPath(root).path);
   const fullKey = targetKey(canonicalFull);
@@ -254,6 +271,14 @@ function inspectTarget(rule, target, context, full, canonicalFull, canonicalErro
     originalBytes = fs.readFileSync(full);
   } catch (error) {
     if (error.code === 'ENOENT') {
+      const blocker = blockedPathComponent(context.scanRoot, full);
+      if (blocker) {
+        return {
+          status: 'error',
+          display,
+          reason: `中间有一段不是文件夹：${toSlashes(path.relative(context.root, blocker))}。这一轮不写。`,
+        };
+      }
       return { status: 'error', display, reason: '文件不存在。' };
     }
     return { status: 'error', display, reason: `读不了这个文件（${error.message}）。` };
