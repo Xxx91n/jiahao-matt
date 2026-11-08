@@ -1,113 +1,83 @@
-# jiahao-matt
+<h1 align="center">jiahao-matt</h1>
 
 <p align="center">
   <b>English</b> | <a href="README-zh-CN.md">中文</a>
 </p>
 
-A tiny script that adds my own rules to an already-installed copy of
-[mattpocock/skills](https://github.com/mattpocock/skills).
+A small script that adds rules to an installed copy of [mattpocock/skills](https://github.com/mattpocock/skills)
+to keep AI agents from turning into [jiahao](https://github.com/Xxx91n/jiahao).
 
-It reports every place it would change before writing, leaves each file's
-existing line endings and BOM as they are, and keeps one copy of each rule no
-matter how often you run it.
+It lists every place it plans to touch before making any changes.
 
 ## Why
 
-mattpocock's skills are good, but grilling and domain modeling let the agent coin
-jargon and quietly write the term into `GLOSSARY.md`. The new words often come
-out stiff, like a translated manual, and then they spread into later work.
+When using mattpocock's skills without boundaries, grilling and domain modeling let agents
+make up junk jargon and write it straight into `GLOSSARY.md`. The coined terms often sound
+like stiff machine translation, dragging down everything you build next.
 
-Two rules fix the two places where that happens:
+Current rules:
 
-| Rule | Goes into | What it stops |
+| Rule | Where it goes | What it does |
 | --- | --- | --- |
-| `glossary-gate` | `engineering/domain-modeling/SKILL.md` | writing, renaming, or redefining a `GLOSSARY.md` term before the user has seen the term, a one-line plain explanation, and the everyday words it replaces |
-| `plain-grilling` | `productivity/grilling/SKILL.md` | questions and recommended answers that sound like a translation instead of a person talking |
+| `glossary-gate` | `engineering/domain-modeling/SKILL.md` | Before writing, renaming, or redefining a term in `GLOSSARY.md`, explain it in plain words, show the everyday words it replaces, and wait for human approval |
+| `plain-grilling` | `productivity/grilling/SKILL.md` | Stop questions and suggested answers from reading like translated manuals; make them sound like natural speech |
 
-Both rules live in [`rules/`](rules/), one Markdown file per rule. The file
-header says which skill file to touch, which sentence marks the landing spot,
-and which word to watch when building the candidate list.
+> Rules live in [`rules/`](rules/), one Markdown file per rule.
 
 ## Requirements
 
-Node 20.1 or newer. No dependencies.
+Node 20.1 or higher
 
-## Use
+## Usage
 
 ```bash
-# Look first. This writes nothing.
-node inject-rules.mjs ~/.agents/skills/grill
+# Preview changes first
+node inject-rules.mjs <path-to-mattpocock-skills>
 
-# Write, after a backup copy.
-node inject-rules.mjs ~/.agents/skills/grill --apply
+# Check first, then apply with automatic backup
+node inject-rules.mjs <path-to-mattpocock-skills> --apply
 
-# Leave one skill file alone for this run.
-node inject-rules.mjs ~/.agents/skills/grill --apply \
+# Skip files you don't want to touch
+node inject-rules.mjs <path-to-mattpocock-skills> --apply \
   --skip productivity/grilling/SKILL.md
 ```
 
-On Windows the installed copy is usually at
-`C:\Users\<you>\.agents\skills\grill`.
+## Troubleshooting
 
-The first argument is the root of the install. The script checks for a `skills/`
-folder to tell two layouts apart:
+Each line starts with a status label:
 
-- **Installed copy** – no `skills/` folder at the root; target paths are read
-  straight from it. This is a copy of the repo's `skills/` folder with the
-  category folders kept, like `~/.agents/skills/grill/engineering/...`.
-- **Repo clone** – `skills/` exists; every target path gets the `skills/` prefix.
-
-A per-skill symlink install (`scripts/link-skills.sh`) puts one symlink per skill
-directly in the skills folder, so there is no `engineering/` level for these
-rules to land in. Point the script at a repo clone or a copied tree instead.
-
-## The report
-
-The script speaks plain Chinese. Each line starts with a status word:
-
-| Word | Meaning |
+| Status label | Meaning |
 | --- | --- |
-| `[会插入]` | the rule block is not in the file yet and would go in after the anchoring paragraph |
-| `[会替换]` | a marker pair is already there, but the text between them differs from the rule file |
-| `[没问题]` | the block already matches the rule file exactly; nothing to do |
-| `[跳过]` | you passed `--skip` for this file |
-| `[出错了]` | something blocks a safe write: a rule file that will not parse, a missing target, two targets pointing at one file, a path segment that is not a folder, a missing or repeated anchoring sentence, unpaired markers, a symlink target, a path that escapes the root, an unreadable file, or bytes that are not UTF-8 |
-| `[候选]` | some other file mentions the rule's watch word; it is not in the target list, so nothing is written there |
+| `[会插入]` | The rule block is not in the file yet; it will be inserted right after the anchor paragraph |
+| `[会替换]` | Markers already exist, but the text inside doesn't match the rule file and will be replaced |
+| `[没问题]` | The block matches the rule file word for word; nothing to touch |
+| `[跳过]` | The file was skipped via `--skip` |
+| `[出错了]` | Something blocked a safe write: rule header failed to parse, target doesn't exist, two targets point to the same file, a path segment isn't a directory, anchor sentence is missing or repeated, markers are mismatched, target is a symlink, path escapes the root directory, file cannot be read, or bytes are not valid UTF-8 |
+| `[候选]` | Another file mentioned a watched word, but it isn't in the target list, so nothing was written |
 
-`[出错了]` found before writing exits 1. With `--apply`, one such check error
-cancels the whole run: no backup folder, no file touched. An error during the
-write phase exits 3 instead: a failed backup leaves the targets untouched (the
-backup folder may be half-built), and a failed write rolls back the files already
-written; if the rollback itself fails, restore from
-`jiahao-backup-<timestamp>/`.
-
-Exit codes: `0` done, `1` a rule file, target, or anchoring problem, `2` wrong
-usage, `3` write failure (including a backup that could not be created). A write
-failure rolls back the files already written.
+- A `[出错了]` detected before writing exits with code 1. With `--apply`, any single check error halts the entire run: no files are modified, and no backup folder is created.
+- An error midway through writing exits with code 3: if creating the backup fails, no target files are modified (though the backup folder might be partially created); if writing fails, already-modified files are rolled back to their original state; if rollback also fails, restore from `jiahao-backup-<timestamp>/`.
+- Exit codes: `0` success, `1` issue with rule files, targets, or anchor sentences, `2` invalid arguments, `3` write failure (including failed backup creation). A write failure rolls back any modified files.
 
 ## Reruns
 
-Every inserted block is wrapped in a marker pair:
+Inserted blocks are wrapped in marker pairs:
 
 ```markdown
 <!-- jiahao:glossary-gate:start -->
-... rule text ...
+... rule content ...
 <!-- jiahao:glossary-gate:end -->
 ```
 
-A second run finds the markers and reports `[没问题]`; nothing is rewritten and no
-new backup folder appears. If you edit the rule text, the next run reports
-`[会替换]` and swaps the block text, keeping one copy.
+- A second run recognizes these markers and reports `[没问题]`. Nothing is rewritten, and no new backup folder is created. If you edit the rule text and rerun, it reports `[会替换]` and only updates the text inside the block—leaving just one copy.
 
-Files are written with a temporary file and a rename, in the file's own folder.
-Existing lines and a leading BOM are left as they are; the inserted block uses
-the file's dominant line ending, so a file with mixed endings keeps its original
-lines untouched. With `--apply`, the files about to change are first copied to
-`jiahao-backup-<timestamp>/` under the root.
+- File writes use an atomic write-and-rename strategy, placing the temporary file right next to the original. Existing lines and leading BOMs are never touched; the inserted block adopts whichever line ending dominates the file, so files with mixed line endings simply gain the block without disturbing existing lines.
 
-## Adding a target
+- With `--apply`, files scheduled to change are copied first into `jiahao-backup-<timestamp>/` under the root directory.
 
-Edit the rule file header and repeat the target block:
+## How to add target markdown files
+
+Edit the header of a rule file and add another target block:
 
 ```markdown
 target:
@@ -116,8 +86,7 @@ after: When exploring the codebase, read `GLOSSARY.md` (if it exists) ...
 position: after-paragraph
 ```
 
-`after` must match exactly one line in the target file. Run without `--apply`
-first to confirm the report.
+`after` must match exactly one line in the target file. Run once without `--apply` first to check the results before writing.
 
 ## Testing
 
@@ -125,30 +94,19 @@ first to confirm the report.
 npm test
 ```
 
-The suite copies the fixture skills into a temp folder and runs the real CLI as a
-child process. It checks the report text, the exit codes, the backup folder, and
-the bytes on disk. The fixtures in `test/fixtures/installed/` are the real
-installed skill files, so the anchoring sentences come from upstream, not from a
-sample written to pass.
+Tests copy sample skills into a temp directory, run the actual CLI script as a child process, and verify report output, exit codes, backup directories, and disk bytes. Sample skills are kept in `test/fixtures/installed/`.
 
-CI runs the same command on Node 20.
-
-Before writing to your real install, rehearse on a copy of it:
+Before writing to your real install directory, you can dry run on a copy:
 
 ```bash
-cp -r ~/.agents/skills/grill /tmp/grill-copy
-node inject-rules.mjs /tmp/grill-copy            # report only
-node inject-rules.mjs /tmp/grill-copy --apply    # writes the copy
-node inject-rules.mjs /tmp/grill-copy --apply    # second run reports [没问题]
+cp -r ~/.agents/skills/matt /tmp/matt-copy
+node inject-rules.mjs /tmp/matt-copy            # Preview only
+node inject-rules.mjs /tmp/matt-copy --apply    # Write to copy
+node inject-rules.mjs /tmp/matt-copy --apply    # Second run reports [没问题]
 ```
-
-On Windows, copy the folder with Explorer instead of `cp -r`, then put the copied
-folder's path in all three calls in place of `/tmp/grill-copy`, for example
-`"C:/Users/<you>/AppData/Local/Temp/grill-copy"`. The first run must show two
-`[会插入]` lines, the third run two `[没问题]` lines, and no new backup folder.
 
 ## License
 
-[MIT](LICENSE). The test fixtures are copies of files from
+[MIT](LICENSE). Test samples are copied from
 [mattpocock/skills](https://github.com/mattpocock/skills); their MIT notice is in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
