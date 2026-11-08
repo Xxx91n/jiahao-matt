@@ -7,9 +7,9 @@
 A tiny script that adds my own rules to an already-installed copy of
 [mattpocock/skills](https://github.com/mattpocock/skills).
 
-It reports every place it would change before writing, leaves CRLF/LF and BOM
-exactly as they are, and keeps one copy of each rule no matter how often you run
-it.
+It reports every place it would change before writing, leaves each file's
+existing line endings and BOM as they are, and keeps one copy of each rule no
+matter how often you run it.
 
 ## Why
 
@@ -66,14 +66,15 @@ The script speaks plain Chinese. Each line starts with a status word:
 | `[会替换]` | a marker pair is already there, but the text between them differs from the rule file |
 | `[没问题]` | the block already matches the rule file exactly; nothing to do |
 | `[跳过]` | you passed `--skip` for this file |
-| `[出错了]` | the target is missing, the anchoring sentence is missing or appears more than once, the markers are unpaired, the path escapes the root, or the bytes are not UTF-8 |
+| `[出错了]` | something blocks a safe write: a rule file that will not parse, a missing target, two targets pointing at one file, a path segment that is not a folder, a missing or repeated anchoring sentence, unpaired markers, a symlink target, a path that escapes the root, an unreadable file, or bytes that are not UTF-8 |
 | `[候选]` | some other file mentions the rule's watch word; it is not in the target list, so nothing is written there |
 
 `[出错了]` in a dry run exits 1. With `--apply`, a single `[出错了]` cancels the
 whole run: no backup folder, no file touched.
 
-Exit codes: `0` done, `1` target or anchoring problem, `2` wrong usage,
-`3` write failure. A write failure rolls back the files already written.
+Exit codes: `0` done, `1` a rule file, target, or anchoring problem, `2` wrong
+usage, `3` write failure (including a backup that could not be created). A write
+failure rolls back the files already written.
 
 ## Reruns
 
@@ -90,8 +91,10 @@ new backup folder appears. If you edit the rule text, the next run reports
 `[会替换]` and swaps the block text, keeping one copy.
 
 Files are written with a temporary file and a rename, in the file's own folder.
-Existing line endings and a leading BOM are preserved. With `--apply`, the files
-about to change are first copied to `jiahao-backup-<timestamp>/` under the root.
+Existing lines and a leading BOM are left as they are; the inserted block uses
+the file's dominant line ending, so a file with mixed endings keeps its original
+lines untouched. With `--apply`, the files about to change are first copied to
+`jiahao-backup-<timestamp>/` under the root.
 
 ## Adding a target
 
