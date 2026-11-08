@@ -114,10 +114,10 @@ function loneLfCount(text) {
 }
 
 function withoutBlock(text, startMarker, endMarker, eol) {
+  assert.equal(text.split(startMarker).length - 1, 1, '开始标记应该只有一个');
+  assert.equal(text.split(endMarker).length - 1, 1, '结束标记应该只有一个');
   const startAt = text.indexOf(startMarker);
   const endAt = text.indexOf(endMarker);
-  assert.notEqual(startAt, -1, '应该有开始标记');
-  assert.notEqual(endAt, -1, '应该有结束标记');
   assert.ok(endAt > startAt, '结束标记应该在开始标记后面');
   const removeFrom = startAt - 2 * eol.length;
   assert.ok(removeFrom >= 0, '插入的块前面应该有两个换行');
