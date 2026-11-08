@@ -14,9 +14,5 @@
   "scripts": {
     "check": "node --check inject-rules.mjs && node --check test/inject-rules.test.mjs",
     "test": "node --test test/inject-rules.test.mjs"
-  },
-  "files": [
-    "inject-rules.mjs",
-    "rules/"
-  ]
+  }
 }
