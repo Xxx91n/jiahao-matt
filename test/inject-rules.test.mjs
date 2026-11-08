@@ -99,15 +99,30 @@ function loneLfCount(text) {
   return count;
 }
 
-function withoutInsertedBlock(text, eol, startMarker, endMarker) {
-  const startAt = text.indexOf(startMarker);
-  const endAt = text.indexOf(endMarker);
+function withoutInsertedBlock(text, eol) {
+  const startAt = text.indexOf(MARKER_START);
+  const endAt = text.indexOf(MARKER_END);
   assert.notEqual(startAt, -1, '应该有开始标记');
   assert.notEqual(endAt, -1, '应该有结束标记');
   assert.ok(endAt > startAt, '结束标记应该在开始标记后面');
   const removeFrom = startAt - 2 * eol.length;
   assert.ok(removeFrom >= 0, '插入的块前面应该有两个换行');
-  return text.slice(0, removeFrom) + text.slice(endAt + endMarker.length);
+  return text.slice(0, removeFrom) + text.slice(endAt + MARKER_END.length);
+}
+
+function runApplyOnRewrittenTarget(t, rewrite) {
+  const dir = makeTempDir(t);
+  copyInstalledFixture(dir);
+  const targetPath = path.join(dir, TARGET);
+  rewrite(targetPath);
+  const beforeBytes = fs.readFileSync(targetPath);
+  const result = run(dir, '--apply');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const afterBytes = fs.readFileSync(targetPath);
+  const afterText = afterBytes.toString('utf8');
+  assert.equal(afterText.split(MARKER_START).length - 1, 1, '开始标记应该只有一个');
+  assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
+  return { beforeBytes, afterBytes, afterText };
 }
 
 const FIXTURE_TARGET_LINE = 62;
@@ -222,11 +237,7 @@ test('--apply：插入一对标记和规则正文，块外每个字节都原样'
   assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
   assert.ok(afterText.includes(BODY_START), '规则正文应该写进目标文件');
 
-  const startAt = afterText.indexOf(MARKER_START);
-  const endAt = afterText.indexOf(MARKER_END);
-  const removeFrom = startAt - 2 * eol.length;
-  assert.ok(removeFrom >= 0, '插入的块前面应该有两个换行');
-  const restored = afterText.slice(0, removeFrom) + afterText.slice(endAt + MARKER_END.length);
+  const restored = withoutInsertedBlock(afterText, eol);
   assert.ok(Buffer.from(restored, 'utf8').equals(beforeBytes), '除了插入的块，其他字节必须原样');
 });
 
@@ -306,64 +317,38 @@ test('--apply：仓库克隆下按带 skills/ 前缀的路径写入和备份', (
 });
 
 test('--apply：CRLF 文件只加 CRLF 行，去掉插入块后和输入逐字节相同', (t) => {
-  const dir = makeTempDir(t);
-  copyInstalledFixture(dir);
-  const targetPath = path.join(dir, TARGET);
-  fs.writeFileSync(targetPath, asCrlf(fs.readFileSync(targetPath, 'utf8')));
-  const beforeBytes = fs.readFileSync(targetPath);
-
-  const result = run(dir, '--apply');
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-
-  const afterText = fs.readFileSync(targetPath, 'utf8');
-  assert.equal(afterText.split(MARKER_START).length - 1, 1, '开始标记应该只有一个');
-  assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
+  const { beforeBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
+    fs.writeFileSync(targetPath, asCrlf(fs.readFileSync(targetPath, 'utf8')));
+  });
   assert.equal(loneLfCount(afterText), 0, 'CRLF 文件里不该出现单独的 LF');
   assert.ok(
-    Buffer.from(withoutInsertedBlock(afterText, '\r\n', MARKER_START, MARKER_END), 'utf8').equals(beforeBytes),
+    Buffer.from(withoutInsertedBlock(afterText, '\r\n'), 'utf8').equals(beforeBytes),
     '去掉插入块后必须和 CRLF 输入一样',
   );
 });
 
 test('--apply：LF 文件只加 LF 行，一个回车都不多，去掉插入块后和输入逐字节相同', (t) => {
-  const dir = makeTempDir(t);
-  copyInstalledFixture(dir);
-  const targetPath = path.join(dir, TARGET);
-  fs.writeFileSync(targetPath, asLf(fs.readFileSync(targetPath, 'utf8')));
-  const beforeBytes = fs.readFileSync(targetPath);
-
-  const result = run(dir, '--apply');
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-
-  const afterText = fs.readFileSync(targetPath, 'utf8');
-  assert.equal(afterText.split(MARKER_START).length - 1, 1, '开始标记应该只有一个');
-  assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
+  const { beforeBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
+    fs.writeFileSync(targetPath, asLf(fs.readFileSync(targetPath, 'utf8')));
+  });
   assert.ok(!afterText.includes('\r'), 'LF 文件里不该出现回车');
   assert.ok(
-    Buffer.from(withoutInsertedBlock(afterText, '\n', MARKER_START, MARKER_END), 'utf8').equals(beforeBytes),
+    Buffer.from(withoutInsertedBlock(afterText, '\n'), 'utf8').equals(beforeBytes),
     '去掉插入块后必须和 LF 输入一样',
   );
 });
 
 test('--apply：带 BOM 的文件写完 BOM 还在最前面，去掉插入块后和输入逐字节相同', (t) => {
-  const dir = makeTempDir(t);
-  copyInstalledFixture(dir);
-  const targetPath = path.join(dir, TARGET);
-  const original = fs.readFileSync(targetPath);
-  const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), original]);
-  fs.writeFileSync(targetPath, withBom);
+  const { beforeBytes: withBom, afterBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
+    const original = fs.readFileSync(targetPath);
+    fs.writeFileSync(targetPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), original]));
+  });
   const eol = withBom.toString('utf8').includes('\r\n') ? '\r\n' : '\n';
-
-  const result = run(dir, '--apply');
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-
-  const afterBytes = fs.readFileSync(targetPath);
   assert.deepEqual([...afterBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM 应该是最前面的三个字节');
   assert.ok(!(afterBytes[3] === 0xef && afterBytes[4] === 0xbb && afterBytes[5] === 0xbf), 'BOM 不该出现两次');
-  const afterText = afterBytes.toString('utf8');
   assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
   assert.ok(
-    Buffer.from(withoutInsertedBlock(afterText, eol, MARKER_START, MARKER_END), 'utf8').equals(withBom),
+    Buffer.from(withoutInsertedBlock(afterText, eol), 'utf8').equals(withBom),
     '去掉插入块后必须和带 BOM 的输入一样',
   );
 });
@@ -530,6 +515,42 @@ test(
     assert.equal(fs.statSync(backups[0]).mode & 0o777, 0o700, '备份文件夹的权限应该是 700');
     const copyPath = path.join(backups[0], TARGET);
     assert.equal(fs.statSync(copyPath).mode & 0o777, 0o600, '备份文件的权限应该固定为 600');
+  },
+);
+
+test(
+  '--apply：唯一的目标写不进去时退出 3，原文件不动，不留临时文件',
+  { skip: process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() === 0 },
+  (t) => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'jiahao-matt-'));
+    const target = path.join(base, 'target');
+    copyInstalledFixture(target);
+    const targetPath = path.join(target, TARGET);
+    const beforeBytes = fs.readFileSync(targetPath);
+
+    let restore;
+    if (process.platform === 'win32') {
+      fs.chmodSync(targetPath, 0o444);
+      restore = () => fs.chmodSync(targetPath, 0o666);
+    } else {
+      fs.chmodSync(path.dirname(targetPath), 0o555);
+      restore = () => fs.chmodSync(path.dirname(targetPath), 0o755);
+    }
+    t.after(() => {
+      restore();
+      fs.rmSync(base, { recursive: true, force: true });
+    });
+
+    const result = run(target, '--apply');
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.match(result.stdout, /\[出错了\]/);
+    assert.match(result.stdout, /写文件失败/);
+    assert.ok(fs.readFileSync(targetPath).equals(beforeBytes), '原文件应该一个字节都不变');
+    const leftovers = fs
+      .readdirSync(path.dirname(targetPath))
+      .filter((name) => name.includes('.jiahao-'));
+    assert.deepEqual(leftovers, [], '临时文件不该留在目标文件夹里');
+    assert.equal(backupDirs(target).length, 1, '写失败时备份应该还在');
   },
 );
 
