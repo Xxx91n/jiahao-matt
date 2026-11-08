@@ -1,4 +1,17 @@
 * text=auto eol=lf
-*.{bat,ps1,cmd} text eol=crlf
-*.{png,ico,icns,jpg,jpeg,gif,webp,exe,dll,node,pdb,msi,so,dylib,bin,zip,gz,tar,7z} binary
-*.json text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.exe binary
+*.dll binary
+*.node binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.7z binary
