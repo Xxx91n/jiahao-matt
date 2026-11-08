@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Reads rules/*.md, scans the target skills folder, and reports what a write
 // would change. A dry run only prints the report; `--apply` also writes the
-// reported blocks.
+// reported blocks. `--skip <path>` may be repeated to leave named targets
+// alone for one run.
 //
 // Rule file shape:
 //
@@ -31,6 +32,7 @@ const STATUS_LABEL = {
   insert: '[会插入]',
   replace: '[会替换]',
   ok: '[没问题]',
+  skip: '[跳过]',
   error: '[出错了]',
   candidate: '[候选]',
 };
@@ -49,16 +51,26 @@ function ruleDisplayName(file) {
 
 function usage(problem) {
   console.error(problem);
-  console.error('用法：node inject-rules.mjs <target-root> [--apply]');
+  console.error('用法：node inject-rules.mjs <target-root> [--apply] [--skip <path>]');
+  console.error('--skip 可以写多次，每次跳过清单里一个目标文件。');
   process.exit(2);
 }
 
 function parseArgs(argv) {
   const positional = [];
+  const skips = [];
   let apply = false;
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
     if (arg === '--apply') {
       apply = true;
+      continue;
+    }
+    if (arg === '--skip') {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('-')) usage('--skip 后面要给一个路径。');
+      skips.push(value);
+      i += 1;
       continue;
     }
     if (arg.startsWith('-')) usage(`不认识的选项：${arg}`);
@@ -67,7 +79,7 @@ function parseArgs(argv) {
   if (positional.length !== 1) usage('要给一个目标根目录，不能多也不能少。');
   const root = path.resolve(positional[0]);
   if (!fs.existsSync(root)) usage(`目标根目录不存在：${root}`);
-  return { root, apply };
+  return { root, apply, skips };
 }
 
 function ruleProblem(file, reason) {
@@ -219,6 +231,27 @@ function bodyWithEol(rule, eol) {
 function targetKey(full) {
   const resolved = path.resolve(full);
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function normalizeSkipPath(value) {
+  const text = toSlashes(String(value).trim());
+  const noDot = text.startsWith('./') ? text.slice(2) : text;
+  return process.platform === 'win32' ? noDot.toLowerCase() : noDot;
+}
+
+function skipAcceptedPaths(target, layout) {
+  const display = `${layout.prefix}${target.path}`;
+  const full = path.join(layout.scanRoot, target.path);
+  return new Set(
+    [display, target.path, toSlashes(path.relative(layout.root, full)), toSlashes(full)].map(
+      normalizeSkipPath,
+    ),
+  );
+}
+
+function matchingSkips(skips, target, layout) {
+  const accepted = skipAcceptedPaths(target, layout);
+  return skips.filter((value) => accepted.has(normalizeSkipPath(value)));
 }
 
 function canonicalPath(value) {
@@ -488,7 +521,8 @@ function main() {
   const { rules, errors: ruleErrors } = loadRules();
   for (const message of ruleErrors) console.log(`${STATUS_LABEL.error} ${message}`);
 
-  const counts = { insert: 0, replace: 0, ok: 0, error: ruleErrors.length };
+  const counts = { insert: 0, replace: 0, ok: 0, skip: 0, error: ruleErrors.length };
+  const matchedSkips = new Set();
   const targetFiles = new Set();
   const plannedTargets = [];
   const seenKeys = new Set();
@@ -513,10 +547,19 @@ function main() {
 
   const changes = [];
   for (const { rule, target, full, canonicalFull, canonicalError } of plannedTargets) {
+    const skipMatches = matchingSkips(context.skips, target, context.layout);
+    for (const value of skipMatches) matchedSkips.add(value);
     if (duplicateKeys.has(targetKey(canonicalFull))) {
       counts.error += 1;
       console.log(
         `${STATUS_LABEL.error} ${rule.id} → ${context.layout.prefix}${target.path}：这个文件被不止一个目标块指到了，这一轮不写。`,
+      );
+      continue;
+    }
+    if (skipMatches.length > 0) {
+      counts.skip += 1;
+      console.log(
+        `${STATUS_LABEL.skip} ${rule.id} → ${context.layout.prefix}${target.path}（--skip 点了它，这一轮不改这个文件）`,
       );
       continue;
     }
@@ -538,6 +581,11 @@ function main() {
     }
   }
 
+  for (const value of context.skips) {
+    if (matchedSkips.has(value)) continue;
+    console.log(`注意：--skip “${value}” 没有对应的目标文件，这次没有跳过任何东西。`);
+  }
+
   let candidateCount = 0;
   for (const rule of rules) {
     for (const candidate of findCandidates(rule, context.layout, targetFiles)) {
@@ -548,7 +596,7 @@ function main() {
 
   console.log(
     `小结：${rules.length} 条规则，${plannedTargets.length} 个目标；` +
-      `会插入 ${counts.insert}，会替换 ${counts.replace}，没问题 ${counts.ok}，出错了 ${counts.error}；` +
+      `会插入 ${counts.insert}，会替换 ${counts.replace}，跳过 ${counts.skip}，没问题 ${counts.ok}，出错了 ${counts.error}；` +
       `候选 ${candidateCount} 个。`,
   );
 
