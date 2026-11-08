@@ -564,11 +564,12 @@ test(
     const targetPath = path.join(target, TARGET);
     const beforeBytes = fs.readFileSync(targetPath);
 
-    const restore = protectFromWrites(targetPath);
+    let restore = () => {};
     t.after(() => {
       restore();
       fs.rmSync(base, { recursive: true, force: true });
     });
+    restore = protectFromWrites(targetPath);
 
     const result = run(target, '--apply');
     assert.equal(result.status, 3, result.stdout + result.stderr);
@@ -614,11 +615,12 @@ test(
   const firstPath = path.join(target, TARGET);
   const firstBefore = fs.readFileSync(firstPath);
 
-  const restore = protectFromWrites(secondPath);
+  let restore = () => {};
   t.after(() => {
     restore();
     fs.rmSync(base, { recursive: true, force: true });
   });
+  restore = protectFromWrites(secondPath);
 
   const result = runScript(path.join(runner, 'inject-rules.mjs'), target, '--apply');
   assert.equal(result.status, 3, result.stdout + result.stderr);
