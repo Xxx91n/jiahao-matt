@@ -83,6 +83,33 @@ function linesStartingWith(stdout, word) {
   return outputLines(stdout).filter((line) => line.startsWith(word));
 }
 
+function asCrlf(text) {
+  return text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+}
+
+function asLf(text) {
+  return text.replace(/\r\n/g, '\n');
+}
+
+function loneLfCount(text) {
+  let count = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\n' && text[i - 1] !== '\r') count += 1;
+  }
+  return count;
+}
+
+function withoutInsertedBlock(text, eol, startMarker, endMarker) {
+  const startAt = text.indexOf(startMarker);
+  const endAt = text.indexOf(endMarker);
+  assert.notEqual(startAt, -1, '应该有开始标记');
+  assert.notEqual(endAt, -1, '应该有结束标记');
+  assert.ok(endAt > startAt, '结束标记应该在开始标记后面');
+  const removeFrom = startAt - 2 * eol.length;
+  assert.ok(removeFrom >= 0, '插入的块前面应该有两个换行');
+  return text.slice(0, removeFrom) + text.slice(endAt + endMarker.length);
+}
+
 const FIXTURE_TARGET_LINE = 62;
 const FIXTURE_INSERT_LINE = 63;
 
@@ -276,6 +303,69 @@ test('--apply：仓库克隆下按带 skills/ 前缀的路径写入和备份', (
   const copyPath = path.join(backups[0], 'skills', TARGET);
   assert.ok(fs.existsSync(copyPath), `备份里应该有 skills/${TARGET}`);
   assert.ok(fs.readFileSync(copyPath).equals(beforeBytes), '备份应该是改动前的原样字节');
+});
+
+test('--apply：CRLF 文件只加 CRLF 行，去掉插入块后和输入逐字节相同', (t) => {
+  const dir = makeTempDir(t);
+  copyInstalledFixture(dir);
+  const targetPath = path.join(dir, TARGET);
+  fs.writeFileSync(targetPath, asCrlf(fs.readFileSync(targetPath, 'utf8')));
+  const beforeBytes = fs.readFileSync(targetPath);
+
+  const result = run(dir, '--apply');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+
+  const afterText = fs.readFileSync(targetPath, 'utf8');
+  assert.equal(afterText.split(MARKER_START).length - 1, 1, '开始标记应该只有一个');
+  assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
+  assert.equal(loneLfCount(afterText), 0, 'CRLF 文件里不该出现单独的 LF');
+  assert.ok(
+    Buffer.from(withoutInsertedBlock(afterText, '\r\n', MARKER_START, MARKER_END), 'utf8').equals(beforeBytes),
+    '去掉插入块后必须和 CRLF 输入一样',
+  );
+});
+
+test('--apply：LF 文件只加 LF 行，一个回车都不多，去掉插入块后和输入逐字节相同', (t) => {
+  const dir = makeTempDir(t);
+  copyInstalledFixture(dir);
+  const targetPath = path.join(dir, TARGET);
+  fs.writeFileSync(targetPath, asLf(fs.readFileSync(targetPath, 'utf8')));
+  const beforeBytes = fs.readFileSync(targetPath);
+
+  const result = run(dir, '--apply');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+
+  const afterText = fs.readFileSync(targetPath, 'utf8');
+  assert.equal(afterText.split(MARKER_START).length - 1, 1, '开始标记应该只有一个');
+  assert.equal(afterText.split(MARKER_END).length - 1, 1, '结束标记应该只有一个');
+  assert.ok(!afterText.includes('\r'), 'LF 文件里不该出现回车');
+  assert.ok(
+    Buffer.from(withoutInsertedBlock(afterText, '\n', MARKER_START, MARKER_END), 'utf8').equals(beforeBytes),
+    '去掉插入块后必须和 LF 输入一样',
+  );
+});
+
+test('--apply：带 BOM 的文件写完 BOM 还在最前面，去掉插入块后和输入逐字节相同', (t) => {
+  const dir = makeTempDir(t);
+  copyInstalledFixture(dir);
+  const targetPath = path.join(dir, TARGET);
+  const original = fs.readFileSync(targetPath);
+  const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), original]);
+  fs.writeFileSync(targetPath, withBom);
+  const eol = withBom.toString('utf8').includes('\r\n') ? '\r\n' : '\n';
+
+  const result = run(dir, '--apply');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+
+  const afterBytes = fs.readFileSync(targetPath);
+  assert.deepEqual([...afterBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM 应该是最前面的三个字节');
+  assert.ok(!(afterBytes[3] === 0xef && afterBytes[4] === 0xbb && afterBytes[5] === 0xbf), 'BOM 不该出现两次');
+  const afterText = afterBytes.toString('utf8');
+  assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
+  assert.ok(
+    Buffer.from(withoutInsertedBlock(afterText, eol, MARKER_START, MARKER_END), 'utf8').equals(withBom),
+    '去掉插入块后必须和带 BOM 的输入一样',
+  );
 });
 
 test('--apply：一个目标找不到定位句时，所有目标都不写', (t) => {
