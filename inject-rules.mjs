@@ -223,30 +223,35 @@ function targetKey(full) {
 
 function canonicalPath(value) {
   try {
-    return fs.realpathSync(value);
+    return { path: fs.realpathSync(value), error: null };
   } catch (error) {
-    if (error.code === 'ENOENT') return path.resolve(value);
-    throw error;
+    return { path: path.resolve(value), error };
   }
 }
 
 function isInside(root, canonicalFull) {
-  const rootKey = targetKey(canonicalPath(root));
+  const rootKey = targetKey(canonicalPath(root).path);
   const fullKey = targetKey(canonicalFull);
   return fullKey.startsWith(`${rootKey}${path.sep}`);
 }
 
-function inspectTarget(rule, target, context, full, canonicalFull) {
+function inspectTarget(rule, target, context, full, canonicalFull, canonicalError) {
   const display = `${context.prefix}${target.path}`;
+  if (canonicalError && canonicalError.code !== 'ENOENT') {
+    return { status: 'error', display, reason: `看不了目标路径（${canonicalError.message}）。` };
+  }
   if (!isInside(context.scanRoot, canonicalFull)) {
     return { status: 'error', display, reason: '目标路径跑到了目标根目录外面，这一轮不写。' };
   }
   let originalBytes;
   let mode;
   try {
-    const stat = fs.statSync(canonicalFull);
+    if (fs.lstatSync(full).isSymbolicLink()) {
+      return { status: 'error', display, reason: '目标本身是符号链接，这一轮不写。' };
+    }
+    const stat = fs.statSync(full);
     mode = stat.mode & 0o777;
-    originalBytes = fs.readFileSync(canonicalFull);
+    originalBytes = fs.readFileSync(full);
   } catch (error) {
     if (error.code === 'ENOENT') {
       return { status: 'error', display, reason: '文件不存在。' };
@@ -265,18 +270,7 @@ function inspectTarget(rule, target, context, full, canonicalFull) {
   const endMarker = `<!-- jiahao:${rule.id}:end -->`;
   const startCount = text.split(startMarker).length - 1;
   const endCount = text.split(endMarker).length - 1;
-  const base = {
-    display,
-    full,
-    canonicalFull,
-    originalBytes,
-    mode,
-    text,
-    eol,
-    bom,
-    startMarker,
-    endMarker,
-  };
+  const base = { display, full, originalBytes, mode, text, eol, bom, startMarker, endMarker };
 
   if (startCount > 0 || endCount > 0) {
     if (startCount !== 1 || endCount !== 1) {
@@ -391,7 +385,7 @@ function applyChanges(changes, context) {
   const written = [];
   try {
     for (const { rule, result } of changes) {
-      writeAtomically(result.canonicalFull, encodeWithBom(plannedText(rule, result), result.bom), result.mode);
+      writeAtomically(result.full, encodeWithBom(plannedText(rule, result), result.bom), result.mode);
       written.push(result);
     }
     console.log(
@@ -402,7 +396,7 @@ function applyChanges(changes, context) {
     let rollbackProblem = false;
     for (const result of written.reverse()) {
       try {
-        writeAtomically(result.canonicalFull, result.originalBytes, result.mode);
+        writeAtomically(result.full, result.originalBytes, result.mode);
       } catch {
         rollbackProblem = true;
       }
@@ -477,17 +471,23 @@ function main() {
   for (const rule of rules) {
     for (const target of rule.targets) {
       const full = path.join(context.layout.scanRoot, target.path);
-      const canonicalFull = canonicalPath(full);
-      plannedTargets.push({ rule, target, full, canonicalFull });
+      const canonical = canonicalPath(full);
+      plannedTargets.push({
+        rule,
+        target,
+        full,
+        canonicalFull: canonical.path,
+        canonicalError: canonical.error,
+      });
       targetFiles.add(full);
-      const key = targetKey(canonicalFull);
+      const key = targetKey(canonical.path);
       if (seenKeys.has(key)) duplicateKeys.add(key);
       seenKeys.add(key);
     }
   }
 
   const changes = [];
-  for (const { rule, target, full, canonicalFull } of plannedTargets) {
+  for (const { rule, target, full, canonicalFull, canonicalError } of plannedTargets) {
     if (duplicateKeys.has(targetKey(canonicalFull))) {
       counts.error += 1;
       console.log(
@@ -495,7 +495,7 @@ function main() {
       );
       continue;
     }
-    const result = inspectTarget(rule, target, context.layout, full, canonicalFull);
+    const result = inspectTarget(rule, target, context.layout, full, canonicalFull, canonicalError);
     if (result.status === 'insert') {
       counts.insert += 1;
       changes.push({ rule, result });

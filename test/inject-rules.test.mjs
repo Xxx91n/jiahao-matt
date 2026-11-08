@@ -379,7 +379,7 @@ test(
 );
 
 test(
-  '--apply：根目录内的符号链接保留链接，写进它指向的文件',
+  '--apply：目标是符号链接时报错，链接指向的文件不变',
   { skip: process.platform === 'win32' },
   (t) => {
     const isolated = makeIsolatedRunner(t);
@@ -387,15 +387,15 @@ test(
     const linked = path.join(isolated.target, 'engineering', 'domain-modeling', 'linked.md');
     fs.renameSync(targetPath, linked);
     fs.symlinkSync(linked, targetPath);
+    const linkedBefore = fs.readFileSync(linked);
 
     const result = runScript(isolated.script, isolated.target, '--apply');
-    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /\[出错了\]/);
+    assert.match(result.stdout, /符号链接/);
     assert.ok(fs.lstatSync(targetPath).isSymbolicLink(), '符号链接本身应该还在');
-
-    const linkedText = fs.readFileSync(linked, 'utf8');
-    assert.equal(linkedText.split(MARKER_START).length - 1, 1, '开始标记应该写进链接指向的文件');
-    assert.equal(linkedText.split(MARKER_END).length - 1, 1, '结束标记应该写进链接指向的文件');
-    assert.equal(backupDirs(isolated.target).length, 1, '应该有一个备份文件夹');
+    assert.ok(fs.readFileSync(linked).equals(linkedBefore), '链接指向的文件应该一个字节都不变');
+    assert.equal(backupDirs(isolated.target).length, 0, '出错时不该有备份文件夹');
   },
 );
 
@@ -414,8 +414,9 @@ test(
 
     const backups = backupDirs(dir);
     assert.equal(backups.length, 1, `应该正好有一个备份文件夹：${backups.join(', ')}`);
+    assert.equal(fs.statSync(backups[0]).mode & 0o777, 0o700, '备份文件夹的权限应该是 700');
     const copyPath = path.join(backups[0], TARGET);
-    assert.equal(fs.statSync(copyPath).mode & 0o777, 0o600, '备份文件的权限应该也是 600');
+    assert.equal(fs.statSync(copyPath).mode & 0o777, 0o600, '备份文件的权限应该固定为 600');
   },
 );
 
