@@ -221,31 +221,32 @@ function targetKey(full) {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
-function realPath(value) {
+function canonicalPath(value) {
   try {
     return fs.realpathSync(value);
-  } catch {
-    return path.resolve(value);
+  } catch (error) {
+    if (error.code === 'ENOENT') return path.resolve(value);
+    throw error;
   }
 }
 
-function isInside(root, full) {
-  const rootKey = targetKey(realPath(root));
-  const fullKey = targetKey(realPath(full));
+function isInside(root, canonicalFull) {
+  const rootKey = targetKey(canonicalPath(root));
+  const fullKey = targetKey(canonicalFull);
   return fullKey.startsWith(`${rootKey}${path.sep}`);
 }
 
-function inspectTarget(rule, target, context, full) {
+function inspectTarget(rule, target, context, full, canonicalFull) {
   const display = `${context.prefix}${target.path}`;
-  if (!isInside(context.scanRoot, full)) {
+  if (!isInside(context.scanRoot, canonicalFull)) {
     return { status: 'error', display, reason: '目标路径跑到了目标根目录外面，这一轮不写。' };
   }
   let originalBytes;
   let mode;
   try {
-    const stat = fs.statSync(full);
+    const stat = fs.statSync(canonicalFull);
     mode = stat.mode & 0o777;
-    originalBytes = fs.readFileSync(full);
+    originalBytes = fs.readFileSync(canonicalFull);
   } catch (error) {
     if (error.code === 'ENOENT') {
       return { status: 'error', display, reason: '文件不存在。' };
@@ -264,7 +265,18 @@ function inspectTarget(rule, target, context, full) {
   const endMarker = `<!-- jiahao:${rule.id}:end -->`;
   const startCount = text.split(startMarker).length - 1;
   const endCount = text.split(endMarker).length - 1;
-  const base = { display, full, originalBytes, mode, text, eol, bom, startMarker, endMarker };
+  const base = {
+    display,
+    full,
+    canonicalFull,
+    originalBytes,
+    mode,
+    text,
+    eol,
+    bom,
+    startMarker,
+    endMarker,
+  };
 
   if (startCount > 0 || endCount > 0) {
     if (startCount !== 1 || endCount !== 1) {
@@ -345,7 +357,7 @@ function writeAtomically(full, bytes, mode) {
   );
   try {
     fs.writeFileSync(temp, bytes);
-    if (mode !== undefined) fs.chmodSync(temp, mode);
+    fs.chmodSync(temp, mode);
     fs.renameSync(temp, full);
   } catch (error) {
     try {
@@ -365,12 +377,11 @@ function applyChanges(changes, context) {
   let backupDir;
   try {
     backupDir = backupFolder(context.root);
-    fs.mkdirSync(backupDir, { recursive: true });
+    fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
     for (const { result } of changes) {
       const copy = path.join(backupDir, path.relative(context.root, result.full));
-      fs.mkdirSync(path.dirname(copy), { recursive: true });
-      fs.writeFileSync(copy, result.originalBytes);
-      fs.chmodSync(copy, 0o600);
+      fs.mkdirSync(path.dirname(copy), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(copy, result.originalBytes, { mode: 0o600 });
     }
   } catch (error) {
     console.log(`${STATUS_LABEL.error} 备份失败：${error.message}。这次一个文件也没有写。`);
@@ -380,7 +391,7 @@ function applyChanges(changes, context) {
   const written = [];
   try {
     for (const { rule, result } of changes) {
-      writeAtomically(result.full, encodeWithBom(plannedText(rule, result), result.bom), result.mode);
+      writeAtomically(result.canonicalFull, encodeWithBom(plannedText(rule, result), result.bom), result.mode);
       written.push(result);
     }
     console.log(
@@ -391,7 +402,7 @@ function applyChanges(changes, context) {
     let rollbackProblem = false;
     for (const result of written.reverse()) {
       try {
-        writeAtomically(result.full, result.originalBytes, result.mode);
+        writeAtomically(result.canonicalFull, result.originalBytes, result.mode);
       } catch {
         rollbackProblem = true;
       }
@@ -466,24 +477,25 @@ function main() {
   for (const rule of rules) {
     for (const target of rule.targets) {
       const full = path.join(context.layout.scanRoot, target.path);
-      plannedTargets.push({ rule, target, full });
+      const canonicalFull = canonicalPath(full);
+      plannedTargets.push({ rule, target, full, canonicalFull });
       targetFiles.add(full);
-      const key = targetKey(full);
+      const key = targetKey(canonicalFull);
       if (seenKeys.has(key)) duplicateKeys.add(key);
       seenKeys.add(key);
     }
   }
 
   const changes = [];
-  for (const { rule, target, full } of plannedTargets) {
-    if (duplicateKeys.has(targetKey(full))) {
+  for (const { rule, target, full, canonicalFull } of plannedTargets) {
+    if (duplicateKeys.has(targetKey(canonicalFull))) {
       counts.error += 1;
       console.log(
         `${STATUS_LABEL.error} ${rule.id} → ${context.layout.prefix}${target.path}：这个文件被不止一个目标块指到了，这一轮不写。`,
       );
       continue;
     }
-    const result = inspectTarget(rule, target, context.layout, full);
+    const result = inspectTarget(rule, target, context.layout, full, canonicalFull);
     if (result.status === 'insert') {
       counts.insert += 1;
       changes.push({ rule, result });

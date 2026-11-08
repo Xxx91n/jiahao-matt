@@ -379,7 +379,28 @@ test(
 );
 
 test(
-  '--apply：写入后目标文件和备份都保留原来的权限',
+  '--apply：根目录内的符号链接保留链接，写进它指向的文件',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const isolated = makeIsolatedRunner(t);
+    const targetPath = path.join(isolated.target, TARGET);
+    const linked = path.join(isolated.target, 'engineering', 'domain-modeling', 'linked.md');
+    fs.renameSync(targetPath, linked);
+    fs.symlinkSync(linked, targetPath);
+
+    const result = runScript(isolated.script, isolated.target, '--apply');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.ok(fs.lstatSync(targetPath).isSymbolicLink(), '符号链接本身应该还在');
+
+    const linkedText = fs.readFileSync(linked, 'utf8');
+    assert.equal(linkedText.split(MARKER_START).length - 1, 1, '开始标记应该写进链接指向的文件');
+    assert.equal(linkedText.split(MARKER_END).length - 1, 1, '结束标记应该写进链接指向的文件');
+    assert.equal(backupDirs(isolated.target).length, 1, '应该有一个备份文件夹');
+  },
+);
+
+test(
+  '--apply：写入后目标文件保留原来的权限，备份固定为 600',
   { skip: process.platform === 'win32' },
   (t) => {
     const dir = makeTempDir(t);
