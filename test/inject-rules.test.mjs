@@ -14,6 +14,7 @@ const CANDIDATE = 'engineering/tdd/SKILL.md';
 const SENTENCE = 'When a term is resolved, update `GLOSSARY.md` right there.';
 const MARKER_START = '<!-- jiahao:glossary-gate:start -->';
 const MARKER_END = '<!-- jiahao:glossary-gate:end -->';
+const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const BODY_START = "**A term is the user's decision.**";
 
 function makeTempDir(t) {
@@ -296,6 +297,45 @@ test('--apply：规则正文改了，重跑替换旧块，标记还是一对', (
   assert.ok(!afterText.includes('answer decides the term, not you.'), '旧正文应该被换掉');
 });
 
+test('--apply：替换旧块时 CRLF 和 BOM 也不变，去掉块后和最初输入逐字节相同', (t) => {
+  const isolated = makeIsolatedRunner(t);
+  const targetPath = path.join(isolated.target, TARGET);
+  const inputText = fs.readFileSync(targetPath, 'utf8');
+  const withBom = Buffer.concat([BOM, Buffer.from(asCrlf(inputText))]);
+  fs.writeFileSync(targetPath, withBom);
+
+  const first = runScript(isolated.script, isolated.target, '--apply');
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.equal(linesStartingWith(first.stdout, '[会插入]').length, 1, first.stdout);
+
+  const originalRule = fs.readFileSync(isolated.ruleFile, 'utf8').replace(/\r\n/g, '\n');
+  const changedRule = originalRule.replace(
+    'answer decides the term, not you.',
+    'answer decides the term, and nobody else.',
+  );
+  assert.notEqual(changedRule, originalRule, '测试规则文件应该改得动');
+  fs.writeFileSync(isolated.ruleFile, changedRule);
+
+  const second = runScript(isolated.script, isolated.target, '--apply');
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.equal(linesStartingWith(second.stdout, '[会替换]').length, 1, second.stdout);
+  assert.match(second.stdout, /备份在/);
+
+  const afterBytes = fs.readFileSync(targetPath);
+  const afterText = afterBytes.toString('utf8');
+  assert.deepEqual([...afterBytes.subarray(0, 3)], [...BOM], 'BOM 应该还在最前面');
+  assert.ok(!afterBytes.subarray(3, 6).equals(BOM), 'BOM 不该出现两次');
+  assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
+  assert.equal(loneLfCount(afterText), 0, 'CRLF 文件里不该出现单独的 LF');
+  assert.equal(afterText.split(MARKER_START).length - 1, 1, '替换后开始标记还是一个');
+  assert.equal(afterText.split(MARKER_END).length - 1, 1, '替换后结束标记还是一个');
+  assert.ok(afterText.includes('and nobody else.'), '新正文应该在文件里');
+  assert.ok(
+    Buffer.from(withoutInsertedBlock(afterText, '\r\n'), 'utf8').equals(withBom),
+    '去掉块后必须和最初输入逐字节相同',
+  );
+});
+
 test('--apply：改过的文件先复制进时间戳备份文件夹', (t) => {
   const dir = makeTempDir(t);
   copyInstalledFixture(dir);
@@ -369,11 +409,11 @@ test('--apply：带 BOM 的文件写完 BOM 还在最前面，去掉插入块后
         const original = fs.readFileSync(targetPath, 'utf8');
         fs.writeFileSync(
           targetPath,
-          Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(variant.toText(original))]),
+          Buffer.concat([BOM, Buffer.from(variant.toText(original))]),
         );
       });
-      assert.deepEqual([...afterBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM 应该是最前面的三个字节');
-      assert.ok(!(afterBytes[3] === 0xef && afterBytes[4] === 0xbb && afterBytes[5] === 0xbf), 'BOM 不该出现两次');
+      assert.deepEqual([...afterBytes.subarray(0, 3)], [...BOM], 'BOM 应该是最前面的三个字节');
+      assert.ok(!afterBytes.subarray(3, 6).equals(BOM), 'BOM 不该出现两次');
       assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
       if (variant.eol === '\n') {
         assert.ok(!afterText.includes('\r'), '带 BOM 的 LF 文件里不该出现回车');
