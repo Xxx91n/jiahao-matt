@@ -1,0 +1,22 @@
+{
+  "name": "jiahao-matt",
+  "version": "0.1.0",
+  "description": "Add plain-language rules to an installed copy of mattpocock/skills, safely and repeatably.",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xxx91n/jiahao-matt.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check inject-rules.mjs && node --check test/inject-rules.test.mjs",
+    "test": "node --test test/inject-rules.test.mjs"
+  },
+  "files": [
+    "inject-rules.mjs",
+    "rules/"
+  ]
+}

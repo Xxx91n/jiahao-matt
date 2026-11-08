@@ -1,0 +1,19 @@
+# Backups written by `--apply`, one folder per run.
+jiahao-backup-*/
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# OS / shell noise
+nul
+Thumbs.db
+.DS_Store
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
