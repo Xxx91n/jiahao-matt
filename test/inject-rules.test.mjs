@@ -118,6 +118,8 @@ function runApplyOnRewrittenTarget(t, rewrite) {
   const beforeBytes = fs.readFileSync(targetPath);
   const result = run(dir, '--apply');
   assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(linesStartingWith(result.stdout, '[会插入]').length, 1, result.stdout);
+  assert.match(result.stdout, /备份在/);
   const afterBytes = fs.readFileSync(targetPath);
   const afterText = afterBytes.toString('utf8');
   assert.equal(afterText.split(MARKER_START).length - 1, 1, '开始标记应该只有一个');
@@ -320,6 +322,9 @@ test('--apply：CRLF 文件只加 CRLF 行，去掉插入块后和输入逐字�
   const { beforeBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
     fs.writeFileSync(targetPath, asCrlf(fs.readFileSync(targetPath, 'utf8')));
   });
+  const beforeText = beforeBytes.toString('utf8');
+  assert.ok(beforeText.includes('\r\n'), '测试输入应该先变成纯 CRLF');
+  assert.equal(loneLfCount(beforeText), 0, '测试输入里不该有单独的 LF');
   assert.equal(loneLfCount(afterText), 0, 'CRLF 文件里不该出现单独的 LF');
   assert.ok(
     Buffer.from(withoutInsertedBlock(afterText, '\r\n'), 'utf8').equals(beforeBytes),
@@ -331,6 +336,7 @@ test('--apply：LF 文件只加 LF 行，一个回车都不多，去掉插入块
   const { beforeBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
     fs.writeFileSync(targetPath, asLf(fs.readFileSync(targetPath, 'utf8')));
   });
+  assert.ok(!beforeBytes.toString('utf8').includes('\r'), '测试输入应该是纯 LF');
   assert.ok(!afterText.includes('\r'), 'LF 文件里不该出现回车');
   assert.ok(
     Buffer.from(withoutInsertedBlock(afterText, '\n'), 'utf8').equals(beforeBytes),
@@ -340,15 +346,16 @@ test('--apply：LF 文件只加 LF 行，一个回车都不多，去掉插入块
 
 test('--apply：带 BOM 的文件写完 BOM 还在最前面，去掉插入块后和输入逐字节相同', (t) => {
   const { beforeBytes: withBom, afterBytes, afterText } = runApplyOnRewrittenTarget(t, (targetPath) => {
-    const original = fs.readFileSync(targetPath);
-    fs.writeFileSync(targetPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), original]));
+    const original = fs.readFileSync(targetPath, 'utf8');
+    fs.writeFileSync(targetPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(asLf(original))]));
   });
-  const eol = withBom.toString('utf8').includes('\r\n') ? '\r\n' : '\n';
+  assert.ok(!withBom.toString('utf8').includes('\r'), '测试输入应该是带 BOM 的纯 LF');
   assert.deepEqual([...afterBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM 应该是最前面的三个字节');
   assert.ok(!(afterBytes[3] === 0xef && afterBytes[4] === 0xbb && afterBytes[5] === 0xbf), 'BOM 不该出现两次');
   assert.equal(afterText.split('\uFEFF').length - 1, 1, 'BOM 应该只有一个');
+  assert.ok(!afterText.includes('\r'), '带 BOM 的 LF 文件里不该出现回车');
   assert.ok(
-    Buffer.from(withoutInsertedBlock(afterText, eol), 'utf8').equals(withBom),
+    Buffer.from(withoutInsertedBlock(afterText, '\n'), 'utf8').equals(withBom),
     '去掉插入块后必须和带 BOM 的输入一样',
   );
 });
