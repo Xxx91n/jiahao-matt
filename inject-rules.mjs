@@ -233,23 +233,25 @@ function targetKey(full) {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
-function skipKey(value) {
+function normalizeSkipPath(value) {
   const text = toSlashes(String(value).trim());
   const noDot = text.startsWith('./') ? text.slice(2) : text;
   return process.platform === 'win32' ? noDot.toLowerCase() : noDot;
 }
 
-function skipAcceptedValues(target, context) {
-  const display = `${context.prefix}${target.path}`;
-  const full = path.join(context.scanRoot, target.path);
+function skipAcceptedPaths(target, layout) {
+  const display = `${layout.prefix}${target.path}`;
+  const full = path.join(layout.scanRoot, target.path);
   return new Set(
-    [display, target.path, toSlashes(path.relative(context.root, full)), toSlashes(full)].map(skipKey),
+    [display, target.path, toSlashes(path.relative(layout.root, full)), toSlashes(full)].map(
+      normalizeSkipPath,
+    ),
   );
 }
 
-function skipForTarget(skips, target, context) {
-  const accepted = skipAcceptedValues(target, context);
-  return skips.find((value) => accepted.has(skipKey(value)));
+function isSkipped(skips, target, layout) {
+  const accepted = skipAcceptedPaths(target, layout);
+  return skips.some((value) => accepted.has(normalizeSkipPath(value)));
 }
 
 function canonicalPath(value) {
@@ -520,7 +522,6 @@ function main() {
   for (const message of ruleErrors) console.log(`${STATUS_LABEL.error} ${message}`);
 
   const counts = { insert: 0, replace: 0, ok: 0, skip: 0, error: ruleErrors.length };
-  const matchedSkips = new Set();
   const targetFiles = new Set();
   const plannedTargets = [];
   const seenKeys = new Set();
@@ -545,8 +546,6 @@ function main() {
 
   const changes = [];
   for (const { rule, target, full, canonicalFull, canonicalError } of plannedTargets) {
-    const skipValue = skipForTarget(context.skips, target, context.layout);
-    if (skipValue !== undefined) matchedSkips.add(skipValue);
     if (duplicateKeys.has(targetKey(canonicalFull))) {
       counts.error += 1;
       console.log(
@@ -554,7 +553,7 @@ function main() {
       );
       continue;
     }
-    if (skipValue !== undefined) {
+    if (isSkipped(context.skips, target, context.layout)) {
       counts.skip += 1;
       console.log(
         `${STATUS_LABEL.skip} ${rule.id} → ${context.layout.prefix}${target.path}（--skip 点了它，这一轮不改这个文件）`,
@@ -577,12 +576,6 @@ function main() {
       counts.error += 1;
       console.log(`${STATUS_LABEL.error} ${rule.id} → ${result.display}：${result.reason}`);
     }
-  }
-
-  for (const value of context.skips) {
-    if (matchedSkips.has(value)) continue;
-    counts.error += 1;
-    console.log(`${STATUS_LABEL.error} 跳过路径 “${value}”：没有对应的目标文件，这一轮不写。`);
   }
 
   let candidateCount = 0;

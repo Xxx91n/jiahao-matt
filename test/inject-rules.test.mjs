@@ -351,20 +351,6 @@ test('--skip 写两次：两个目标都跳过，退出 0，也不建备份', (t
   assertSameFiles(before, snapshot(dir));
 });
 
-test('--skip：路径对不上任何目标时报错，退出 1，整轮不写', (t) => {
-  const dir = makeTempDir(t);
-  copyInstalledFixture(dir);
-  const before = snapshot(dir);
-
-  const result = run(dir, '--apply', '--skip', 'engineering/no-such/SKILL.md');
-  assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout, /\[出错了\]/);
-  assert.match(result.stdout, /没有对应的目标文件/);
-  assert.equal(linesStartingWith(result.stdout, '[会插入]').length, 2, result.stdout);
-  assert.equal(backupDirs(dir).length, 0, '出错时不该有备份文件夹');
-  assertSameFiles(before, snapshot(dir));
-});
-
 test('--skip：仓库布局下认带 skills/ 前缀的路径', (t) => {
   const dir = makeTempDir(t);
   copyInstalledFixture(dir, { underSkills: true });
