@@ -30,7 +30,7 @@ and which word to watch when building the candidate list.
 
 ## Requirements
 
-Node 20 or newer. No dependencies.
+Node 20.1 or newer. No dependencies.
 
 ## Use
 
@@ -52,9 +52,14 @@ On Windows the installed copy is usually at
 The first argument is the root of the install. The script checks for a `skills/`
 folder to tell two layouts apart:
 
-- **Installed copy** – no `skills/` folder; target paths are read straight from
-  the root. This is the flattening that `scripts/link-skills.sh` produces.
+- **Installed copy** – no `skills/` folder at the root; target paths are read
+  straight from it. This is a copy of the repo's `skills/` folder with the
+  category folders kept, like `~/.agents/skills/grill/engineering/...`.
 - **Repo clone** – `skills/` exists; every target path gets the `skills/` prefix.
+
+A per-skill symlink install (`scripts/link-skills.sh`) puts one symlink per skill
+directly in the skills folder, so there is no `engineering/` level for these
+rules to land in. Point the script at a repo clone or a copied tree instead.
 
 ## The report
 
@@ -69,8 +74,12 @@ The script speaks plain Chinese. Each line starts with a status word:
 | `[出错了]` | something blocks a safe write: a rule file that will not parse, a missing target, two targets pointing at one file, a path segment that is not a folder, a missing or repeated anchoring sentence, unpaired markers, a symlink target, a path that escapes the root, an unreadable file, or bytes that are not UTF-8 |
 | `[候选]` | some other file mentions the rule's watch word; it is not in the target list, so nothing is written there |
 
-`[出错了]` in a dry run exits 1. With `--apply`, a single `[出错了]` cancels the
-whole run: no backup folder, no file touched.
+`[出错了]` found before writing exits 1. With `--apply`, one such check error
+cancels the whole run: no backup folder, no file touched. An error during the
+write phase exits 3 instead: a failed backup leaves the targets untouched (the
+backup folder may be half-built), and a failed write rolls back the files already
+written; if the rollback itself fails, restore from
+`jiahao-backup-<timestamp>/`.
 
 Exit codes: `0` done, `1` a rule file, target, or anchoring problem, `2` wrong
 usage, `3` write failure (including a backup that could not be created). A write
@@ -133,10 +142,13 @@ node inject-rules.mjs /tmp/grill-copy --apply    # writes the copy
 node inject-rules.mjs /tmp/grill-copy --apply    # second run reports [没问题]
 ```
 
-On Windows, copy the folder with Explorer instead of `cp -r`; the three script
-calls are the same. The first run must show two `[会插入]` lines, the third run
-two `[没问题]` lines, and no new backup folder.
+On Windows, copy the folder with Explorer instead of `cp -r`, then put the copied
+folder's path in all three calls in place of `/tmp/grill-copy`, for example
+`"C:/Users/<you>/AppData/Local/Temp/grill-copy"`. The first run must show two
+`[会插入]` lines, the third run two `[没问题]` lines, and no new backup folder.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The test fixtures are copies of files from
+[mattpocock/skills](https://github.com/mattpocock/skills); their MIT notice is in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
